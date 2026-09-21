@@ -22,6 +22,7 @@ from fedsift.resource_study import (
     validate_resource_study_preparation,
 )
 from fedsift.study_factory import build_study_construction
+from fedsift.study_design import load_study_design
 from fedsift.training_budget_factory import SharedTrainingBudgetPolicy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,7 +78,7 @@ def _scope() -> ResourceStudyScope:
     return ResourceStudyScope(outer_repeat=0, outer_fold=0, inner_fold=0, hpo_seed=HPO_SEEDS[0])
 
 
-def _build(construction, policy=None):
+def _build(construction, policy=None, **options):
     fixed_policy = _policy() if policy is None else policy
     scope = _scope()
     return build_resource_study(
@@ -91,6 +92,7 @@ def _build(construction, policy=None):
         warmup_passes=1,
         latin_square_repetitions=1,
         order_seed=_identity("test_real_data_resource_smoke_order"),
+        **options,
     )
 
 
@@ -128,6 +130,28 @@ class RealRegisteredDataResourceSmokeTests(unittest.TestCase):
         cls.construction = _construction()
         cls.policy = _policy()
         cls.preparation = _build(cls.construction, cls.policy)
+
+    def test_paper_roster_excludes_unrequested_methods_from_schedule_and_execution(self) -> None:
+        methods = tuple(load_study_design()["main_methods"])
+        preparation = _build(self.construction, self.policy, method_ids=methods)
+        validate_resource_study_preparation(
+            preparation, expected_preparation_sha256=preparation.preparation_sha256
+        )
+        self.assertEqual(tuple(row["method_id"] for row in preparation.method_bindings), methods)
+        schedule = build_resource_protocol_order_manifest(
+            preparation.cost_capability, synthetic_input=preparation.input_binding,
+            expected_capability_sha256=preparation.cost_capability["capability_sha256"],
+        )
+        for phase in ("warmup_orders", "measured_orders"):
+            for entry in schedule[phase]:
+                self.assertEqual(set(entry["method_ids"]), set(methods))
+        request = _executor_request(preparation, "fedsift")
+        receipts = preparation.resource_executor(**request)
+        self.assertEqual(len(receipts), MAX_STEPS)
+        self.assertTrue(all(row["method_id"] == "fedsift" for row in receipts))
+        request["method_id"] = "dp_fedsofim_delta_proxy_adapted"
+        with self.assertRaises(ResourceStudyBoundaryError):
+            preparation.resource_executor(**request)
 
     def test_all_ten_main_methods_are_prepared_with_one_neutral_policy(self) -> None:
         preparation = self.preparation

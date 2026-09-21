@@ -20,6 +20,7 @@ from fedsift.resource_study import (
 from fedsift.runtime_environment import RuntimeEnvironmentGuard
 from fedsift.study_factory import build_study_construction, propose_study
 from fedsift.training_budget_factory import SharedTrainingBudgetPolicy
+from fedsift.study_design import load_study_design
 
 ROOT = Path(__file__).resolve().parents[1]
 TOP = results_root()
@@ -85,6 +86,7 @@ preparation = build_resource_study(
     expected_policy_sha256=policy.policy_sha256,
     warmup_passes=1,
     latin_square_repetitions=1,
+    method_ids=load_study_design()["main_methods"],
     order_seed=_identity("pima_result_blind_cost_benchmark_order"),
 )
 preparation_record = {

@@ -16,6 +16,7 @@ import os
 import sys
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -478,6 +479,20 @@ def build_outer_failure_artifact(
 
 
 def _load_hpo_upstreams(dataset: str):
+    # Reuse construction only while all source records remain byte-identical.
+    # File contents, rather than mtimes, bind this cache to the selected study.
+    paths = [HPO_ROOT / "launch_authorization.json", HPO_ROOT / dataset / "proposal.json"]
+    paths.extend(HPO_ROOT / dataset / "closed_evidence" / name
+                 for name in ("ledger_closure.json", "ledger.json", "attempt_receipts.json"))
+    project = Path(__file__).resolve().parents[1]
+    paths.extend(sorted(path for path in (project / "data").rglob("*")
+                        if path.suffix.lower() in (".csv", ".arff")))
+    source_hashes = tuple(hashlib.sha256(path.read_bytes()).hexdigest() for path in paths)
+    return _cached_hpo_upstreams(dataset, source_hashes)
+
+
+@lru_cache(maxsize=1)
+def _cached_hpo_upstreams(dataset: str, source_hashes: tuple[str, ...]):
     import search as hpo_runner
 
     authorization = hpo_runner._authorization()

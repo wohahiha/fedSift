@@ -51,7 +51,7 @@ HPO_PROBABILITY_CONTRACT: dict[str, object] = {
         {"criterion": "communication_bytes", "direction": "minimize_external"},
         {"criterion": "candidate_id", "direction": "lexicographic_min_external"},
     ],
-    "development_context": "log_loss_first_for_all_methods_after_disclosed_v4_pilot_not_independent_confirmation",
+    "development_context": _identity("selection_development_context"),
     "average_precision_companion": "prevalence",
     "interpretation": "development_informed_native_probability_quality_selection",
 }
@@ -307,7 +307,7 @@ class ThresholdSelectionRule:
         target = float(self.target_sensitivity)
         if not math.isfinite(target) or target != TECHNICAL_TARGET_SENSITIVITY:
             raise EvaluationError(
-                _identity("n1_target_sensitivity_must_be_explicitly_fixed_to_0_85")
+                "target_sensitivity must be explicitly fixed to 0.85"
             )
         if not isinstance(self.candidate_thresholds, tuple):
             raise EvaluationError("candidate_thresholds must be an explicit tuple")
@@ -569,6 +569,23 @@ def _threshold_metrics(counts: Mapping[str, int]) -> dict[str, float | None]:
         "balanced_accuracy": balanced_accuracy,
         "mcc": mcc,
     }
+
+
+def compute_prediction_metrics(
+    row_ids: object, labels: object, probabilities: object, *, threshold: float
+) -> dict[str, float | None]:
+    """Evaluate saved predictions using the same definitions as outer evaluation.
+
+    Only log loss clips probabilities. Ranking, Brier score, and classification
+    use the original probabilities, including exact zero and one.
+    """
+    rows = _validated_probability_rows(row_ids, labels, probabilities)
+    if isinstance(threshold, bool) or not isinstance(threshold, Real):
+        raise EvaluationError("threshold must be a real number")
+    threshold = float(threshold)
+    if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+        raise EvaluationError("threshold must be finite and in [0, 1]")
+    return {**_probability_metrics(rows), **_threshold_metrics(_confusion_counts(rows, threshold))}
 
 
 def _threshold_denominators(counts: Mapping[str, int]) -> dict[str, object]:
@@ -857,6 +874,7 @@ __all__ = [
     "ZERO_DENOMINATOR_POLICY",
     "canonical_sha256",
     "compute_hpo_probability_metrics",
+    "compute_prediction_metrics",
     "evaluate_outer_test",
     "select_threshold_from_v_sel",
     "threshold_receipt_sha256",

@@ -1,0 +1,19 @@
+{
+  "name": "FedSift",
+  "datasets": ["pima", "retinopathy"],
+  "main_methods": ["fedavg_nonprivate", "dp_fedavg", "dp_fedadam", "fedsift"],
+  "ablations": ["fedsift_public_argmin_rule", "fedsift_uniform_schedule", "fedsift_without_sift"],
+  "outer_repeats": [0],
+  "outer_folds": [0, 1, 2, 3, 4],
+  "inner_folds": [0, 1, 2],
+  "candidates_per_method": 24,
+  "training_seeds": [101, 211, 307],
+  "initialization": {"policy": "fixed_paired_across_methods_and_noise_seeds", "seed": 20260901},
+  "evaluation_seed": 939188524,
+  "server_rounds": 50,
+  "clients": 5,
+  "target_epsilon": 8.0,
+  "target_delta": 0.00001,
+  "log_loss_probability_clip": 0.0000001,
+  "candidate_pairing": [["fedavg_nonprivate", "dp_fedavg"], ["dp_fedadam", "fedsift"]]
+}

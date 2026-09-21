@@ -312,7 +312,7 @@ def _expected_manifest(model: _FixedScreeningBase) -> dict[str, Any]:
             "convex_objective": "binary_cross_entropy_with_logits",
         }
     else:
-        raise ModelingError(_identity("model_class_is_outside_the_fixed_n1_families"))
+        raise ModelingError("model class is outside the fixed families")
     return {
         "schema": _identity("fixed_model_manifest"),
         "family": model.family,
@@ -346,7 +346,7 @@ def _fan_in_for_parameter(model: _FixedScreeningBase, name: str) -> int:
 def validate_fixed_model(model: nn.Module) -> None:
     """Validate class, manifest, parameter order, dtype, device and finiteness."""
     if type(model) not in {ScreeningMLP, LogisticScreening}:
-        raise ModelingError(_identity("model_class_is_outside_the_fixed_n1_families"))
+        raise ModelingError("model class is outside the fixed families")
     assert isinstance(model, _FixedScreeningBase)
     expected_manifest = _expected_manifest(model)
     expected_json = _canonical_json(expected_manifest)
@@ -733,8 +733,6 @@ class SelectedBCEGradientBridge:
         rows, all_ids, _ = _validate_row_table_structure(
             model, features, labels, row_ids, empty_selection
         )
-        if rows <= 0:
-            raise ModelingError("gradient bridge population must be non-empty")
         if not torch.isfinite(features).all():
             raise ModelingError("gradient bridge features contain a non-finite value")
         if not torch.isfinite(labels).all() or not bool(((labels == 0.0) | (labels == 1.0)).all()):

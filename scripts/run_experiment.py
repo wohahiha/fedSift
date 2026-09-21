@@ -83,7 +83,7 @@ def runner_contract() -> dict[str, Any]:
 
 def _plan() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     plan = _read_json(PLAN_PATH)
-    _verify_hash(plan, "rapid_outer_plan_sha256")
+    _verify_hash(plan, _identity("outer_plan_hash_field"))
     units = plan.get("units")
     if not isinstance(units, list) or len(units) != 70:
         raise ExperimentError("registered experiment unit catalog differs")
@@ -92,13 +92,13 @@ def _plan() -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
 def _authorization() -> dict[str, Any]:
     value = _read_json(AUTH_PATH)
-    _verify_hash(value, "rapid_outer_launch_authorization_sha256")
+    _verify_hash(value, _identity("outer_authorization_hash_field"))
     plan, _ = _plan()
     expected = {
         "schema": _identity("outer_launch_authorization"),
-        "status": "RAPID_OUTER_LAUNCH_AUTHORIZED",
+        "status": _identity("outer_authorization_status"),
         "runner_sha256": registered_study()["runner_sha256"]["run_experiment"],
-        "rapid_outer_plan_sha256": plan["rapid_outer_plan_sha256"],
+        _identity("outer_plan_hash_field"): plan[_identity("outer_plan_hash_field")],
         "worker_shards": SHARDS,
         "planned_unit_count": 70,
         "user_authorized_scope_reduction": True,
@@ -127,7 +127,7 @@ def worker(arguments: argparse.Namespace) -> None:
         if complete_path.exists():
             outer.validate_outer_unit_artifact(_read_json(complete_path), expected_unit=unit)
             reused += 1
-            state = "reused_rapid_complete_unit"
+            state = "reused_complete_unit"
         elif journal_path.exists():
             raise ExperimentError(f"interrupted experiment unit has an outer access journal: {unit_id}")
         else:
@@ -169,8 +169,8 @@ def worker(arguments: argparse.Namespace) -> None:
             "reused_count": reused,
             "last_unit_id": unit_id,
             "last_unit_state": state,
-            "rapid_outer_launch_authorization_sha256": authorization[
-                "rapid_outer_launch_authorization_sha256"
+            _identity("outer_authorization_hash_field"): authorization[
+                _identity("outer_authorization_hash_field")
             ],
         }
         _atomic_json(progress_path, progress)

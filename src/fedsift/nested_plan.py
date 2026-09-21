@@ -976,7 +976,7 @@ def validate_nested_plan(
         "outer_test_hpo_access": "forbidden_fail_closed",
     }
     if plan.get("design") != expected_design:
-        raise NestedPlanError(_identity("nested_plan_design_differs_from_fixed_n1_design"))
+        raise NestedPlanError("nested plan design differs from the fixed design")
     source_binding = _root_binding(group_manifest)
     if plan.get("source_binding") != source_binding:
         raise NestedPlanError("source or group-manifest binding differs")

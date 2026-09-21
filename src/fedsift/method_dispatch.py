@@ -142,7 +142,7 @@ def _validate_common_candidate(
 ) -> Mapping[str, object]:
     optimizer = _mapping(parameters.get("local_optimizer"), "local_optimizer")
     if set(optimizer) != {"name", "learning_rate"} or optimizer.get("name") != "sgd":
-        raise MethodDispatchError(_identity("all_n1_candidates_require_plain_local_sgd"))
+        raise MethodDispatchError("all candidates require plain local SGD")
     _positive_float(optimizer.get("learning_rate"), "local learning rate")
     backend = _mapping(parameters.get("backend"), "backend")
     expected_backend = _BACKEND_NAME[parent_method]
@@ -397,7 +397,7 @@ def build_method_execution_spec(
     claim_boundary = (
         "adapted_trajectory_average_proxy_not_paper_or_official_repo_reproduction"
         if parent == "dp_fedsofim_delta_proxy_adapted"
-        else "registered_n1_method_implementation"
+        else _identity("registered_method_implementation")
     )
     payload: dict[str, object] = {
         "schema": _identity("method_execution_spec"),

@@ -93,7 +93,7 @@ class StudyConstruction:
     def __init__(self, *args: object, **kwargs: object) -> None:
         del args, kwargs
         raise StudyFactoryError(
-            "RealN1StudyConstruction instances can only be created by the factory"
+            "StudyConstruction instances can only be created by the factory"
         )
 
     @property
@@ -835,7 +835,7 @@ def propose_study(
     The returned proposal is intentionally not factory-sealed and cannot be
     consumed where a ``StudyConstruction`` is required.  After recording
     ``proposed_bundle_sha256`` outside this process, the caller must invoke
-    ``build_real_n1_study_construction`` with that value as the external
+    ``build_study_construction`` with that value as the external
     expected hash.
     """
     parts = _construct_study_parts(
@@ -1082,9 +1082,7 @@ def validate_study_construction(
         raise StudyFactoryError("construction differs from full real-data reconstruction")
 
 
-build_study_bundle = build_study_bundle
 propose_study_bundle = propose_study
-validate_study_bundle = validate_study_bundle
 __all__ = [
     "SCHEMA",
     "SECURITY_BOUNDARY",
@@ -1093,15 +1091,13 @@ __all__ = [
     "StudyConstruction",
     "StudyProposal",
     "StudyFactoryError",
-    "build_real_n1_study_construction",
-    "build_real_n1_study_bundle",
+    "build_study_construction",
     "build_study_bundle",
-    "propose_real_n1_study",
-    "propose_real_n1_study_bundle",
+    "propose_study",
+    "propose_study_bundle",
     "study_bundle_fingerprint",
-    "validate_real_n1_study_bundle",
-    "validate_real_n1_study_bundle_integrity",
-    "validate_real_n1_study_construction",
-    "validate_real_n1_study_proposal",
+    "validate_study_bundle_integrity",
+    "validate_study_construction",
+    "validate_study_proposal",
     "validate_study_bundle",
 ]

@@ -1,4 +1,4 @@
-"""Close and aggregate the frozen 70-unit FedSift rapid outer experiment."""
+"""Validate and aggregate the 70-model FedSift outer experiment."""
 
 from __future__ import annotations
 from fedsift.artifact_contract import identity as _identity
@@ -27,7 +27,7 @@ TOP = results_root()
 PLAN_PATH = ROOT / "config" / "experiment_plan.json"
 RUN_ROOT = TOP / "main"
 RESULT_ROOT = TOP / "main_summary"
-PLAN_HASH_FIELD = "rapid_outer_plan_sha256"
+PLAN_HASH_FIELD = _identity("outer_plan_hash_field")
 METHODS = (
     "fedavg_nonprivate",
     "dp_fedavg",
@@ -133,7 +133,7 @@ def _plan() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     _verify_hash(plan, PLAN_HASH_FIELD)
     units = plan.get("units")
     if not isinstance(units, list) or len(units) != 70:
-        raise ResultSummaryError("rapid plan must contain exactly 70 units")
+        raise ResultSummaryError("experiment plan must contain exactly 70 units")
     return (plan, units)
 
 
@@ -356,9 +356,9 @@ def self_test(_: argparse.Namespace) -> None:
         raise ResultSummaryError("summary interval ordering failed")
     plan, units = _plan()
     if plan.get("outer_prediction_or_quality_metrics_read_for_selection") is not False:
-        raise ResultSummaryError("rapid plan result-blind marker differs")
+        raise ResultSummaryError("experiment plan result-blind marker differs")
     if len({str(unit["unit_id"]) for unit in units}) != 70:
-        raise ResultSummaryError("rapid unit identity uniqueness failed")
+        raise ResultSummaryError("experiment unit identity uniqueness failed")
     print(json.dumps({"status": "SELF_TEST_OK", "planned_units": 70}))
 
 
@@ -396,9 +396,9 @@ def finalize(_: argparse.Namespace) -> None:
     closure = _artifact(
         {
             "schema": _identity("outer_closure"),
-            "status": "RAPID_OUTER_COMPLETE_70_OF_70",
+            "status": "OUTER_COMPLETE_70_OF_70",
             "closed_at_utc": datetime.now(timezone.utc).isoformat(),
-            "rapid_outer_plan_sha256": plan[PLAN_HASH_FIELD],
+            _identity("outer_plan_hash_field"): plan[PLAN_HASH_FIELD],
             "finalizer_sha256": _file_sha256(Path(__file__)),
             "planned_unit_count": 70,
             "completed_unit_count": 70,
@@ -420,7 +420,7 @@ def finalize(_: argparse.Namespace) -> None:
             "result_file_catalog": catalog,
             "result_file_catalog_sha256": _canonical_sha256(catalog),
         },
-        "rapid_outer_closure_sha256",
+        _identity("outer_closure_hash_field"),
     )
     _atomic_json(RESULT_ROOT / "experiment_closure.json", closure)
     print(json.dumps(closure, ensure_ascii=False))

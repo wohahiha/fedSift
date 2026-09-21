@@ -3,9 +3,9 @@
 The private gate owns iid Poisson sampling, selected-row gradient dispatch,
 full-parameter Gaussian noise, the joint DP kernel, typed correction
 derivation, the optimizer update, and runtime privacy accounting. Sampling and
-noise use separate deterministic torch PRNG domains solely to reproduce
-experiments. They are not deployment CSPRNGs and this module is not a secure
-runtime or an end-to-end privacy proof.
+noise use separate streams. Reproducible benchmark runs use deterministic
+torch generators; private runs draw from the operating system. Detailed step
+receipts are internal audit data and must not accompany a private model release.
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ import hashlib
 import hmac
 import json
 import math
+import secrets
+from random import SystemRandom
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from numbers import Real
@@ -40,6 +42,7 @@ TensorState = OrderedDict[str, torch.Tensor]
 POISSON_STEP_RECEIPT_SCHEMA = _identity("poisson_optimizer_step_receipt")
 MECHANISM_CORE_SCHEMA = _identity("poisson_mechanism_core_evidence")
 EXPERIMENTAL_RNG_CLAIM = "deterministic_torch_prng_for_experiment_reproduction_not_csprng_not_deployment_security_evidence"
+PRIVATE_RNG_CLAIM = "operating_system_randomness_four_draw_gaussian_internal_audit_only"
 RANDOMNESS_PAIRING_CLAIM = "paired_seed_repeat_index_only_actual_prng_streams_are_method_candidate_isolated_not_common_random_numbers"
 RECEIPT_CONFIDENTIALITY = (
     "internal_audit_artifact_contains_private_gradient_commitment_do_not_publish"
@@ -183,21 +186,6 @@ def _validated_population(row_ids: Sequence[int]) -> tuple[int, ...]:
     if tuple(sorted(values)) != values:
         raise LocalTrainingGateError("population row IDs must be in canonical order")
     return values
-
-
-@dataclass(frozen=True, slots=True)
-class PostPrivacyCorrectionAuthorization:
-    """Disabled legacy self-attestation retained only for import compatibility."""
-
-    source: str
-    fixed_before_current_poisson_draw: bool
-    independent_of_current_raw_records: bool
-    contains_no_current_step_private_statistic: bool
-
-    def __post_init__(self) -> None:
-        raise LocalTrainingGateError(
-            "legacy arbitrary correction authorization is disabled; use a typed NoCorrection, FedProxCorrection, or ScaffoldCorrection"
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,7 +516,7 @@ def build_scaffold_correction(
 
 @dataclass(frozen=True, slots=True)
 class PoissonStepReceipt:
-    """Exact v2 internal receipt for one completed private optimizer step."""
+    """Internal receipt for one completed private optimizer step."""
 
     schema: str
     optimizer_step_index: int
@@ -653,7 +641,7 @@ def poisson_step_receipt_fingerprint(receipt: PoissonStepReceipt) -> str:
     if (
         receipt.schema != POISSON_STEP_RECEIPT_SCHEMA
         or receipt.mechanism_order != MECHANISM_ORDER
-        or receipt.rng_security_claim != EXPERIMENTAL_RNG_CLAIM
+        or receipt.rng_security_claim not in {EXPERIMENTAL_RNG_CLAIM, PRIVATE_RNG_CLAIM}
         or (receipt.randomness_pairing_claim != RANDOMNESS_PAIRING_CLAIM)
         or (receipt.receipt_confidentiality != RECEIPT_CONFIDENTIALITY)
         or (type(receipt.performance_metrics_consumed) is not bool)
@@ -669,12 +657,17 @@ def poisson_step_receipt_fingerprint(receipt: PoissonStepReceipt) -> str:
 
 
 def _draw_internal_poisson_mask(
-    *, population_size: int, sample_rate: float, device: torch.device, generator: torch.Generator
+    *, population_size: int, sample_rate: float, device: torch.device,
+    generator: torch.Generator | SystemRandom
 ) -> torch.Tensor:
     """Draw N independent Bernoulli(q) indicators from the sampling stream."""
-    uniforms = torch.rand(
-        (population_size,), dtype=torch.float64, device=device, generator=generator
-    )
+    if isinstance(generator, SystemRandom):
+        uniforms = torch.tensor([generator.random() for _ in range(population_size)],
+                                dtype=torch.float64, device=device)
+    else:
+        uniforms = torch.rand(
+            (population_size,), dtype=torch.float64, device=device, generator=generator
+        )
     if (
         uniforms.shape != (population_size,)
         or uniforms.device != device
@@ -685,20 +678,30 @@ def _draw_internal_poisson_mask(
 
 
 def _draw_full_parameter_gaussian_noise(
-    state: Mapping[str, torch.Tensor], *, noise_std: float, generator: torch.Generator
+    state: Mapping[str, torch.Tensor], *, noise_std: float,
+    generator: torch.Generator | SystemRandom
 ) -> TensorState:
     """Draw all Gaussian tensors, including after an empty Poisson draw."""
     first = next(iter(state.values()))
-    if not isinstance(generator, torch.Generator) or torch.device(generator.device) != first.device:
+    if not isinstance(generator, SystemRandom) and (
+        not isinstance(generator, torch.Generator) or torch.device(generator.device) != first.device
+    ):
         raise LocalTrainingGateError("Gaussian generator device differs from the model")
     output: TensorState = OrderedDict()
     for name, parameter in state.items():
-        standard_normal = torch.randn(
-            tuple(parameter.shape),
-            dtype=parameter.dtype,
-            device=parameter.device,
-            generator=generator,
-        )
+        if isinstance(generator, SystemRandom):
+            # Discard one draw and combine four independent normals as in the
+            # Opacus secure-noise construction. SystemRandom has no saved seed.
+            generator.normalvariate(0.0, 1.0)
+            values = [sum(generator.normalvariate(0.0, 1.0) for _ in range(4)) / 2.0
+                      for _ in range(parameter.numel())]
+            standard_normal = torch.tensor(values, dtype=parameter.dtype,
+                                           device=parameter.device).reshape(parameter.shape)
+        else:
+            standard_normal = torch.randn(
+                tuple(parameter.shape), dtype=parameter.dtype,
+                device=parameter.device, generator=generator,
+            )
         if (
             tuple(standard_normal.shape) != tuple(parameter.shape)
             or standard_normal.dtype != parameter.dtype
@@ -963,6 +966,8 @@ class PoissonLocalTrainingGate:
         correction_policy: CorrectionPolicy,
         initial_model_state_sha256: str,
         initial_model_state_source_sha256: str,
+        reference_sample_count: int | None = None,
+        randomness_mode: str = "reproducible",
         eps_error: float = 0.01,
         delta_error: float | None = None,
     ) -> None:
@@ -974,10 +979,17 @@ class PoissonLocalTrainingGate:
         if type(gradient_bridge) is not SelectedBCEGradientBridge:
             raise LocalTrainingGateError("private gate requires the fixed BCE gradient bridge")
         population = _validated_population(population_row_ids)
-        if population != gradient_bridge.canonical_population_row_ids:
+        if not set(gradient_bridge.canonical_population_row_ids).issubset(population):
             raise LocalTrainingGateError(
-                "gate population differs from the gradient bridge population"
+                "gradient bridge contains rows outside the fixed reference population"
             )
+        reference_count = (
+            len(population) if reference_sample_count is None
+            else _positive_exact_int(reference_sample_count, "reference sample count")
+        )
+        if randomness_mode not in {"reproducible", "private"}:
+            raise LocalTrainingGateError("unknown randomness mode")
+        self._randomness_mode = randomness_mode
         sampling_root = _seed(sampling_seed, "sampling seed")
         noise_root = _seed(noise_seed, "noise seed")
         if sampling_root == noise_root:
@@ -1018,6 +1030,8 @@ class PoissonLocalTrainingGate:
         self._population_row_ids = population
         self._population_row_ids_sha256 = row_id_sequence_sha256(population)
         self._population_size = len(population)
+        self._reference_sample_count = reference_count
+        self._present_row_ids = frozenset(gradient_bridge.canonical_population_row_ids)
         self._clip_norm = _positive_real(clip_norm, "clip norm")
         self._learning_rate = _positive_real(learning_rate, "learning rate")
         self._sampling_seed = sampling_root
@@ -1081,7 +1095,12 @@ class PoissonLocalTrainingGate:
 
     def _rng_stream(
         self, *, purpose: str, root_seed: int, domain: str, step_index: int, device: torch.device
-    ) -> tuple[torch.Generator, str, str, int]:
+    ) -> tuple[torch.Generator | SystemRandom, str, str, int]:
+        if self._randomness_mode == "private":
+            # These audit identifiers are independent of the random draws;
+            # unlike a reproducible stream identifier, they cannot seed replay.
+            stream_id = secrets.token_hex(32)
+            return SystemRandom(), stream_id, secrets.token_hex(32), secrets.randbits(256)
         material = {
             "schema": _identity("experimental_rng_stream"),
             "purpose": purpose,
@@ -1173,7 +1192,7 @@ class PoissonLocalTrainingGate:
                 (
                     row_id
                     for (row_id, selected) in zip(self._population_row_ids, mask_values)
-                    if bool(selected)
+                    if bool(selected) and row_id in self._present_row_ids
                 )
             )
             sampled_count = len(selected_row_ids)
@@ -1187,7 +1206,7 @@ class PoissonLocalTrainingGate:
             correction_values, correction_kind, correction_lineage = _derive_correction(
                 correction_spec, state_copy, self._bridge, input_state_hash
             )
-            fixed_normalization = rate * self._population_size
+            fixed_normalization = rate * self._reference_sample_count
             noise_std = noise_multiplier * self._clip_norm
             gaussian_noise = _draw_full_parameter_gaussian_noise(
                 state_copy, noise_std=noise_std, generator=noise_generator
@@ -1306,7 +1325,8 @@ class PoissonLocalTrainingGate:
                 previous_receipt_sha256=self._previous_receipt_sha256,
                 accountant_steps_after=self._accountant.recorded_steps,
                 mechanism_order=MECHANISM_ORDER,
-                rng_security_claim=EXPERIMENTAL_RNG_CLAIM,
+                rng_security_claim=(PRIVATE_RNG_CLAIM if self._randomness_mode == "private"
+                                    else EXPERIMENTAL_RNG_CLAIM),
                 randomness_pairing_claim=RANDOMNESS_PAIRING_CLAIM,
                 receipt_confidentiality=RECEIPT_CONFIDENTIALITY,
                 performance_metrics_consumed=False,

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('verify','train-smoke','rebuild','replay','benchmark','search','audit-search','tests')]
+    [ValidateSet('verify','train-smoke','rebuild','replay','benchmark','analyze','search','audit-search','tests')]
     [string]$Mode = 'verify',
     [string]$Distribution = 'Ubuntu',
     [switch]$ModelsOnly

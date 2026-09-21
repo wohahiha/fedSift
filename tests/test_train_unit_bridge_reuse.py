@@ -1,5 +1,10 @@
 from __future__ import annotations
 import os
+import copy
+import json
+from pathlib import Path
+from collections import OrderedDict
+import torch.nn.functional as F
 import platform
 import unittest
 from collections.abc import Mapping
@@ -22,62 +27,9 @@ from tests import test_train_unit as train_unit_fixtures
 _budget = train_unit_fixtures._budget
 _method_capability = train_unit_fixtures._method_capability
 _sealed_data = train_unit_fixtures._sealed_data
-REGISTERED_REPLAY_ENVIRONMENT = {
-    "BLIS_NUM_THREADS": "1",
-    "CUDA_VISIBLE_DEVICES": "",
-    "MKL_DYNAMIC": "FALSE",
-    "MKL_NUM_THREADS": "1",
-    "NUMEXPR_NUM_THREADS": "1",
-    "OMP_DYNAMIC": "FALSE",
-    "OMP_NUM_THREADS": "1",
-    "OPENBLAS_NUM_THREADS": "1",
-    "PYTHONHASHSEED": "0",
-    "PYTHONDONTWRITEBYTECODE": "1",
-    "VECLIB_MAXIMUM_THREADS": "1",
-    "torch_num_threads": 1,
-    "torch_num_interop_threads": 16,
-    "torch_version": "2.5.1+cpu",
-    "opacus_version": "1.5.4",
-    "python_version": "3.10.12",
-}
-REGISTERED_REPLAY_SEMANTIC_GOLDENS = {
-    "private_logistic_empty": {
-        "semantic_sha256": "15e2a2feea1183ba046fa7efefeac3694eb3ad0baf7feeb6a4b3251f49f7167e",
-        "artifact_sha256": "fa07215da992447d5885a85a779cc8fe6094ca0cf52fe1acb25ee317a1f86df7",
-        "final_model_state_sha256": "02a70e00b0b90297e044b17c47a4503611d5aad27c21297ae0294d0e92afbd3e",
-        "round_evidence_sha256": "6f248ef46ab6fe9702a118fd9f6867f4e4fe1e68082a43022f7964726be820ca",
-        "resource_summary_sha256": "6f33448c825fec001d3a433bba42f81e7fcc3e8b8a0fa3fbb9c536af0865014b",
-        "local_step_receipts_sha256": "caa9fc792f4ac1df45f21b9c24328c9dddfd8abb9101b656e2bcb05bbcf6eb79",
-        "sampled_record_counts": [0, 0],
-    },
-    "private_mlp_nonempty": {
-        "semantic_sha256": "9a44fef8dd4760ba9b9973fa62d4f3fa3d5bf05dfb743401fb9c74852a3e55c2",
-        "artifact_sha256": "ed6fd778bfc2521b61fdcb3e6bdace522f27062add52140bbd3ed004110e6bfe",
-        "final_model_state_sha256": "901e921dedd6fcc9c241d64f15fe3a897d985c24c811205796fcef76bffaf02f",
-        "round_evidence_sha256": "56f8ff228b08e2adee0d0c36cecef613ff1f1356ebec8f71e36908de853e5443",
-        "resource_summary_sha256": "cc48821732763ef5ad4eaf4d7306476cc0d683e257fbad1fd3ae7df8c9b917da",
-        "local_step_receipts_sha256": "e87fdad8ed789ad3c6807694bb5eb50199a1b6c99eaa8a2793a70596ffde0eea",
-        "sampled_record_counts": [43, 43],
-    },
-    "nonprivate_logistic_shuffled": {
-        "semantic_sha256": "c083bf869218780792a9a045fa27c221a05c0ac9a055d696fbbc6755e89cd918",
-        "artifact_sha256": "3cc1e578816ff994ec13d8a15c712855b9eadeb1101e9127745cb11a412fbeb3",
-        "final_model_state_sha256": "f6b5d9bc1c9a27ff98c8dc4ca35fa31d92dc017dccb1670908f1e0cbce0849e9",
-        "round_evidence_sha256": "a77b88c7eb4a984a8c3fb6ec31d00fe2f90edcf73543f6e2b638f0ab3dba248a",
-        "resource_summary_sha256": "21242dbc166ee45149668a8af2ac2a0f12ab5fcd0b851b15439714ead2c3b291",
-        "local_step_receipts_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-        "sampled_record_counts": [],
-    },
-    "nonprivate_mlp_shuffled": {
-        "semantic_sha256": "b981ee939d02223350135349525dfb3b2d8f754aab8ebfec61cb68e5669493f4",
-        "artifact_sha256": "adc235cdc661b41e99ccabe6a6b5ffeb4d6a2a00d91c21c74d2a9f4e94cf719c",
-        "final_model_state_sha256": "4274e43952b5381b36a1503d14f40ce588e2f21f98603e19c581a55d04a70b41",
-        "round_evidence_sha256": "d5acd04e1b58fdc10ea1f0b43e4420ea8767796360dbce4e1cad6416c791149e",
-        "resource_summary_sha256": "33c4f1dffd2f8f3a5ce462a5b92132c89899e0f0cd320c6b12cb0d1550e31d06",
-        "local_step_receipts_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-        "sampled_record_counts": [],
-    },
-}
+_STATIC_REPLAY = json.loads((Path(__file__).parent / "fixtures/training_replay.json").read_text())
+REGISTERED_REPLAY_ENVIRONMENT = _STATIC_REPLAY["environment"]
+REGISTERED_REPLAY_SEMANTIC_GOLDENS = _STATIC_REPLAY["cases"]
 
 
 def _runtime_environment() -> dict[str, object]:
@@ -180,7 +132,7 @@ def _semantic_evidence(result) -> dict[str, object]:
 
 
 def _fresh_bridge_from_bound(bridge: SelectedBCEGradientBridge) -> SelectedBCEGradientBridge:
-    """Test-only reconstruction of the pre-reuse per-helper bridge."""
+    """Test-only reconstruction of the uncached per-call gradient bridge."""
     return SelectedBCEGradientBridge(
         bridge.model, bridge._features, bridge._labels, bridge._row_ids
     )
@@ -222,15 +174,15 @@ class TrainingUnitBridgeReuseTests(unittest.TestCase):
         train_unit_fixtures.TrainingUnitIntegrationTests.setUpClass()
         cls.base = train_unit_fixtures.TrainingUnitIntegrationTests.base
 
-    def _execute(self, method: str, budget_factory, *, legacy_fresh: bool = False):
+    def _execute(self, method: str, budget_factory, *, uncached_fresh: bool = False):
         capability = _method_capability(self.base, method)
         data = _sealed_data(capability)
         budget = budget_factory(data, capability)
-        legacy_fresh_count = 0
+        uncached_fresh_count = 0
 
         def fresh_bridge(bound_bridge):
-            nonlocal legacy_fresh_count
-            legacy_fresh_count += 1
+            nonlocal uncached_fresh_count
+            uncached_fresh_count += 1
             return _fresh_bridge_from_bound(bound_bridge)
 
         original_nonprivate = train_unit_module._execute_nonprivate_client
@@ -241,14 +193,14 @@ class TrainingUnitBridgeReuseTests(unittest.TestCase):
                     "fedsift.train_unit.SelectedBCEGradientBridge", wraps=SelectedBCEGradientBridge
                 )
             )
-            if legacy_fresh:
+            if uncached_fresh:
 
-                def legacy_nonprivate(**kwargs):
+                def uncached_nonprivate(**kwargs):
                     arguments = dict(kwargs)
                     arguments["bridge"] = fresh_bridge(arguments["bridge"])
                     return original_nonprivate(**arguments)
 
-                def legacy_private(**kwargs):
+                def uncached_private(**kwargs):
                     arguments = dict(kwargs)
                     arguments["bridge"] = fresh_bridge(arguments["bridge"])
                     return original_private(**arguments)
@@ -256,11 +208,11 @@ class TrainingUnitBridgeReuseTests(unittest.TestCase):
                 stack.enter_context(
                     patch(
                         "fedsift.train_unit._execute_nonprivate_client",
-                        side_effect=legacy_nonprivate,
+                        side_effect=uncached_nonprivate,
                     )
                 )
                 stack.enter_context(
-                    patch("fedsift.train_unit._execute_private_client", side_effect=legacy_private)
+                    patch("fedsift.train_unit._execute_private_client", side_effect=uncached_private)
                 )
             result = execute_training_unit(
                 capability,
@@ -277,28 +229,54 @@ class TrainingUnitBridgeReuseTests(unittest.TestCase):
             expected_capability_sha256=capability["capability_sha256"],
             expected_budget_sha256=budget.budget_sha256,
         )
-        return (result, bridge_factory.call_count, legacy_fresh_count)
+        return (result, bridge_factory.call_count, uncached_fresh_count)
 
-    def test_reuse_matches_same_process_legacy_fresh_reference(self) -> None:
+    def test_reuse_matches_same_process_uncached_fresh_reference(self) -> None:
         for name, (method, budget_factory) in _cases().items():
             with self.subTest(case=name):
-                legacy, legacy_cache_count, legacy_fresh_count = self._execute(
-                    method, budget_factory, legacy_fresh=True
+                uncached, uncached_cache_count, uncached_fresh_count = self._execute(
+                    method, budget_factory, uncached_fresh=True
                 )
                 reuse, reuse_bridge_count, reuse_fresh_count = self._execute(method, budget_factory)
-                self.assertEqual(_semantic_payload(reuse), _semantic_payload(legacy))
-                self.assertEqual(_semantic_evidence(reuse), _semantic_evidence(legacy))
-                self.assertEqual(legacy_cache_count, 1)
-                self.assertEqual(legacy_fresh_count, 2)
+                self.assertEqual(_semantic_payload(reuse), _semantic_payload(uncached))
+                self.assertEqual(_semantic_evidence(reuse), _semantic_evidence(uncached))
+                self.assertEqual(uncached_cache_count, 1)
+                self.assertEqual(uncached_fresh_count, 2)
                 self.assertEqual(reuse_bridge_count, 1)
                 self.assertEqual(reuse_fresh_count, 0)
 
+    def test_training_matches_independent_per_record_autograd(self) -> None:
+        def literal_gradients(model, state, features, labels, row_ids, selected_row_ids):
+            model = copy.deepcopy(model)
+            model.load_state_dict(state)
+            names = tuple(state)
+            parameters = tuple(model.parameters())
+            rows = {name: [] for name in names}
+            positions = {int(row): index for index, row in enumerate(row_ids)}
+            for row_id in selected_row_ids:
+                index = positions[int(row_id)]
+                logit = model(features[index:index + 1])[0]
+                loss = F.binary_cross_entropy_with_logits(logit, labels[index], reduction="sum")
+                for name, gradient in zip(names, torch.autograd.grad(loss, parameters)):
+                    rows[name].append(gradient.detach())
+            return OrderedDict((name, torch.stack(rows[name]) if rows[name] else
+                                value.new_empty((0, *value.shape))) for name, value in state.items())
+
+        for name, (method, budget_factory) in _cases().items():
+            with self.subTest(case=name):
+                actual, _, _ = self._execute(method, budget_factory)
+                with patch("fedsift.modeling.selected_per_record_bce_gradients", side_effect=literal_gradients):
+                    reference, _, _ = self._execute(method, budget_factory)
+                for parameter in actual.model_state:
+                    torch.testing.assert_close(actual.model_state[parameter], reference.model_state[parameter],
+                                               rtol=1e-12, atol=1e-12)
+                self.assertEqual(actual.parallel_privacy_report, reference.parallel_privacy_report)
+                self.assertEqual([r.sampled_record_count for r in actual.local_step_receipts],
+                                 [r.sampled_record_count for r in reference.local_step_receipts])
+
     def test_registered_environment_replays_static_goldens(self) -> None:
         environment = _runtime_environment()
-        if environment != REGISTERED_REPLAY_ENVIRONMENT:
-            self.skipTest(
-                f"static replay golden is restricted to the registered single-thread environment, observed={environment!r}"
-            )
+        self.assertEqual(environment, REGISTERED_REPLAY_ENVIRONMENT, "run tests with the packaged runtime")
         observed = {}
         for name, (method, budget_factory) in _cases().items():
             result, bridge_count, fresh_count = self._execute(method, budget_factory)

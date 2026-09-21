@@ -302,7 +302,7 @@ def _median(values: Sequence[float], feature_name: str) -> float:
 def _raw_fit_matrix_sha256(
     rows: DatasetRows, row_ids: Sequence[int], *, zero_missing: set[str]
 ) -> str:
-    digest = hashlib.sha256(b"FedSift-N1\x00V_ctrl-raw-fit-matrix-v1\x00")
+    digest = hashlib.sha256(_identity("control_fit_matrix_domain").encode("utf-8"))
     for row_id in row_ids:
         digest.update(struct.pack(">Q", row_id))
         for feature_name, raw in zip(rows.feature_names, rows.features[row_id]):
@@ -413,7 +413,7 @@ def _transform_matrix(
 
 
 def _matrix_sha256(role: str, row_ids: Sequence[int], matrix: Sequence[Sequence[float]]) -> str:
-    digest = hashlib.sha256(b"FedSift-N1\x00preprocessed-role-matrix-v1\x00")
+    digest = hashlib.sha256(_identity("preprocessed_matrix_domain").encode("utf-8"))
     digest.update(role.encode("utf-8"))
     digest.update(struct.pack(">Q", len(row_ids)))
     for row_id, row in zip(row_ids, matrix):

@@ -207,7 +207,7 @@ class ProbabilityMetricTests(unittest.TestCase):
         )
         self.assertEqual(
             contract["development_context"],
-            "log_loss_first_for_all_methods_after_disclosed_v4_pilot_not_independent_confirmation",
+            _identity("selection_development_context"),
         )
         self.assertEqual(
             set(report["metrics"]), {"average_precision", "auroc", "brier_score", "log_loss"}

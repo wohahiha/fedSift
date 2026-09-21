@@ -1,4 +1,4 @@
-"""Run the frozen 12-unit rapid malicious-client stress matrix."""
+"""Run the twelve malicious-client stress experiments."""
 
 from __future__ import annotations
 from fedsift.artifact_contract import identity as _identity
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping
 import numpy as np
 import torch
-from sklearn.metrics import average_precision_score, brier_score_loss, log_loss, roc_auc_score
+from fedsift.evaluation import compute_prediction_metrics
 import evaluate_attacks as common
 import outer_training as outer
 from fedsift.method_dispatch import build_method_execution_spec
@@ -134,23 +134,14 @@ class LocalUpdateHook:
 
 
 def metrics(labels: np.ndarray, probabilities: np.ndarray, threshold: float) -> dict[str, float]:
-    p = np.clip(probabilities, 1e-12, 1 - 1e-12)
-    pred = (p >= threshold).astype(int)
-    tp = int(np.sum((pred == 1) & (labels == 1)))
-    tn = int(np.sum((pred == 0) & (labels == 0)))
-    fp = int(np.sum((pred == 1) & (labels == 0)))
-    fn = int(np.sum((pred == 0) & (labels == 1)))
-    sens = tp / (tp + fn) if tp + fn else float("nan")
-    spec = tn / (tn + fp) if tn + fp else float("nan")
-    return {
-        "log_loss": float(log_loss(labels, p, labels=[0, 1])),
-        "brier_score": float(brier_score_loss(labels, p)),
-        "auroc": float(roc_auc_score(labels, p)),
-        "average_precision": float(average_precision_score(labels, p)),
-        "sensitivity": sens,
-        "specificity": spec,
-        "balanced_accuracy": float((sens + spec) / 2),
-    }
+    values = compute_prediction_metrics(
+        np.arange(len(labels)), labels, probabilities, threshold=threshold
+    )
+    names = (
+        "log_loss", "brier_score", "auroc", "average_precision",
+        "sensitivity", "specificity", "balanced_accuracy",
+    )
+    return {name: float(values[name]) for name in names}
 
 
 def prepare_target(
@@ -278,6 +269,17 @@ def execute(
         "training_result_artifact_sha256": result.artifact["artifact_sha256"],
         "outer_unit_id": unit["unit_id"],
         "attacked_metrics": attacked,
+        "attacked_model": {
+            "weight": weight.tolist(),
+            "bias": bias,
+            "preprocessing_artifact_sha256": clean.preprocessing_artifact_sha256,
+        },
+        "outer_predictions": {
+            "row_ids": rows.tolist(),
+            "labels": labels.tolist(),
+            "probabilities": probabilities.tolist(),
+            "threshold": threshold,
+        },
         "paired_delta_attacked_minus_clean": deltas,
         "nonfinite_model_or_predictions": bool(
             any((not torch.isfinite(v).all() for v in result.model_state.values()))
@@ -300,12 +302,12 @@ def worker(args: argparse.Namespace) -> None:
     plan = common.load_plan()
     specs = [s for s in plan["poisoning_robustness"]["units"] if s["dataset_id"] == args.dataset]
     outer_plan = common.read_json(OUTER_PLAN_PATH)
-    common.verify(outer_plan, "rapid_outer_plan_sha256")
+    common.verify(outer_plan, _identity("outer_plan_hash_field"))
     unit_index = {u["unit_id"]: u for u in outer_plan["units"]}
-    upstream = outer._load_hpo_upstreams(args.dataset)
+    upstream = None
     cache: dict[str, tuple[Any, Any, Any, dict[str, Any]]] = {}
     for spec in specs:
-        attack_id = common.sha({"domain": "rapid_poisoning_v1", "spec": spec})
+        attack_id = common.sha({"domain": _identity("poisoning_attack_domain"), "spec": spec})
         path = RESULT_ROOT / "units" / f"{attack_id}.json"
         if path.is_file():
             result = common.read_json(path)
@@ -314,6 +316,8 @@ def worker(args: argparse.Namespace) -> None:
             target = str(spec["outer_unit_id"])
             unit = unit_index[target]
             if target not in cache:
+                if upstream is None:
+                    upstream = outer._load_hpo_upstreams(args.dataset)
                 cache[target] = prepare_target(unit, upstream)
             try:
                 result = execute(spec, unit, cache[target])
@@ -367,7 +371,7 @@ def finalize(_: argparse.Namespace) -> None:
         raise PoisoningError(f"poisoning failures present: {len(failures)}")
     rows = []
     for spec in specs:
-        attack_id = common.sha({"domain": "rapid_poisoning_v1", "spec": spec})
+        attack_id = common.sha({"domain": _identity("poisoning_attack_domain"), "spec": spec})
         result = common.read_json(RESULT_ROOT / "units" / f"{attack_id}.json")
         common.verify(result, "poisoning_unit_sha256")
         rows.append(
@@ -389,7 +393,7 @@ def finalize(_: argparse.Namespace) -> None:
         "schema": _identity("poisoning_closure"),
         "status": "POISONING_COMPLETE_12_OF_12",
         "closed_at_utc": datetime.now(timezone.utc).isoformat(),
-        "rapid_followup_plan_sha256": plan[common.PLAN_HASH_FIELD],
+        _identity("followup_plan_hash_field"): plan[common.PLAN_HASH_FIELD],
         "unit_count": len(rows),
         "summary_sha256": hashlib.sha256(
             (RESULT_ROOT / "poisoning_summary.csv").read_bytes()

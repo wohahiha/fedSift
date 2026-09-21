@@ -91,6 +91,49 @@ def _validate_pair(
 
 class ControlRuleGoldenTests(unittest.TestCase):
 
+    def test_small_control_sets_fall_back_without_inventing_uncertainty(self) -> None:
+        for labels in ([], [1]):
+            with self.subTest(labels=labels):
+                table = []
+                for order, (alpha, probability) in enumerate(((0.0, 0.5), (0.5, 0.99), (1.0, 0.1))):
+                    probabilities = [probability] * len(labels)
+                    losses = _losses(labels, probabilities)
+                    table.append({
+                        "order": order, "alpha": alpha, "probability": probabilities,
+                        "per_record_log_loss": losses,
+                        "mean_log_loss": sum(losses) / len(losses) if losses else None,
+                    })
+                receipt = decide_fedsift(
+                    scope=_scope(), binding=_binding(), row_ids=list(range(len(labels))),
+                    labels=labels, candidate_table=table, expected_alphas=(0.0, 0.5, 1.0),
+                    safety_margin_z=0.0, minimum_control_improvement=0.0,
+                )
+                self.assertEqual(float.fromhex(receipt["selected_alpha_hex"]), 1.0)
+                for row in receipt["decision_rows"]:
+                    self.assertIsNone(row["paired_standard_error_hex"])
+                    self.assertFalse(row["passes_supported_override"])
+                validate_control_decision_receipt(
+                    receipt, expected_receipt_sha256=receipt["receipt_sha256"],
+                    rule_name="fedsift_supported_override", scope=_scope(), binding=_binding(),
+                    row_ids=list(range(len(labels))), labels=labels, candidate_table=table,
+                    expected_alphas=(0.0, 0.5, 1.0), safety_margin_z=0.0,
+                    minimum_control_improvement=0.0,
+                )
+
+    def test_single_class_control_set_can_support_a_partial_step(self) -> None:
+        labels = [1, 1, 1, 1]
+        table = _candidate_table(labels)
+        for row, probability in zip(table, (0.5, 0.9, 0.6)):
+            row["probability"] = [probability] * 4
+            row["per_record_log_loss"] = _losses(labels, row["probability"])
+            row["mean_log_loss"] = sum(row["per_record_log_loss"]) / 4
+        receipt = decide_fedsift(
+            scope=_scope(), binding=_binding(), row_ids=[1, 2, 3, 4], labels=labels,
+            candidate_table=table, expected_alphas=(0.0, 0.5, 1.0),
+            safety_margin_z=1.96, minimum_control_improvement=0.0,
+        )
+        self.assertEqual(float.fromhex(receipt["selected_alpha_hex"]), 0.5)
+
     def setUp(self) -> None:
         self.row_ids = [101, 102, 103, 104]
         self.labels = [1, 0, 1, 0]

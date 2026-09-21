@@ -15,7 +15,6 @@ from fedsift.local_training import (
     LocalTrainingGatePoisoned,
     PoissonLocalTrainingGate,
     PoissonStepResult,
-    PostPrivacyCorrectionAuthorization,
     build_correction_source_binding,
     build_fedprox_correction,
     build_scaffold_correction,
@@ -186,7 +185,7 @@ class InternalPoissonIdentityTests(unittest.TestCase):
                 optimizer_step_index=1,
             )
 
-    def test_internal_mask_drives_exact_selected_ids_and_v2_receipt(self) -> None:
+    def test_internal_mask_drives_exact_selected_ids_and_receipt(self) -> None:
         gate, bridge, state = _fixture()
         observed: list[tuple[int, ...]] = []
         original = bridge.selected_gradient_batch
@@ -430,14 +429,7 @@ class TypedCorrectionTests(unittest.TestCase):
             ):
                 _fixture(correction_kind=kind, method_id=method_id)
 
-    def test_arbitrary_mapping_and_legacy_self_authorization_are_rejected(self) -> None:
-        with self.assertRaises(LocalTrainingGateError):
-            PostPrivacyCorrectionAuthorization(
-                source="prior_dp_state_postprocessing",
-                fixed_before_current_poisson_draw=True,
-                independent_of_current_raw_records=True,
-                contains_no_current_step_private_statistic=True,
-            )
+    def test_arbitrary_correction_mapping_is_rejected(self) -> None:
         gate, _, state = _fixture()
         forged = OrderedDict(((name, torch.zeros_like(value)) for (name, value) in state.items()))
         with (

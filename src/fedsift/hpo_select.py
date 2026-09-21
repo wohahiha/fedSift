@@ -214,7 +214,7 @@ def _frozen_design(hpo_plan: Mapping[str, object]) -> tuple[tuple[int, ...], tup
         raise HpoSelectionError("frozen HPO seeds are duplicated")
     inner_count = _exact_int(nested.get("inner_folds"), "inner_folds", minimum=2)
     if inner_count != 3:
-        raise HpoSelectionError(_identity("n1_selection_requires_exactly_three_inner_folds"))
+        raise HpoSelectionError("selection requires exactly three inner folds")
     return (seeds, tuple(range(inner_count)))
 
 

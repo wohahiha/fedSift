@@ -73,7 +73,7 @@ def canonical_float64_bytes(value: float) -> bytes:
 
 
 def _feature_group_id(features: Sequence[float]) -> str:
-    digest = hashlib.sha256(b"FedSift-N1\x00exact-feature-group-v1\x00")
+    digest = hashlib.sha256(_identity("exact_feature_group_domain").encode("utf-8"))
     digest.update(struct.pack(">I", len(features)))
     for value in features:
         digest.update(canonical_float64_bytes(float(value)))
@@ -83,7 +83,7 @@ def _feature_group_id(features: Sequence[float]) -> str:
 def _subject_group_id(subject_id: str, salt: str) -> str:
     if not salt:
         raise GroupManifestError("subject-id grouping requires a non-empty salt")
-    digest = hashlib.sha256(b"FedSift-N1\x00subject-group-v1\x00")
+    digest = hashlib.sha256(_identity("subject_group_domain").encode("utf-8"))
     digest.update(salt.encode("utf-8"))
     digest.update(b"\x00")
     digest.update(str(subject_id).encode("utf-8"))

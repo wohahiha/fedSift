@@ -10,7 +10,7 @@ average of the gradients encountered along each client's local trajectory
 when constant-step SGD is used. It is not the paper's current full-batch
 gradient G_t.
 
-The server applies the rank-one inverse from DP-FedSOFIM v3 to that proxy:
+The server applies the DP-FedSOFIM rank-one inverse to that proxy:
 
     M_t = beta * M_(t-1) + (1-beta) * proxy_t
     theta_(t+1) = theta_t - eta * (rho I + M_t M_t^T)^-1 * proxy_t
@@ -39,7 +39,7 @@ SOFIM_PROXY_DEFINITION = "normalized_proxy_i=-delta_i/(actual_local_steps_i*loca
 SOFIM_PROXY_INTERPRETATION = (
     "local_trajectory_average_gradient_proxy_not_current_full_batch_gradient"
 )
-SOFIM_VARIANT = "paper_v3_rank_one_on_normalized_local_trajectory_proxy"
+SOFIM_VARIANT = _identity("sofim_trajectory_proxy_variant")
 _STATE_SCHEMA = _identity("sofim_state")
 _TENSOR_MAPPING_SCHEMA = _identity("sofim_tensor_mapping")
 _AGGREGATION_PLAN_SCHEMA = _identity("sofim_aggregation_plan")

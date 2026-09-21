@@ -168,8 +168,8 @@ def _canonical_rows(row_ids: object, labels: object) -> tuple[tuple[int, ...], t
         raise ControlRuleError("row_ids and labels must be one-dimensional sequences")
     raw_ids = list(row_ids)
     raw_labels = list(labels)
-    if not raw_ids or len(raw_ids) != len(raw_labels):
-        raise ControlRuleError("control row_ids and labels must be non-empty and aligned")
+    if len(raw_ids) != len(raw_labels):
+        raise ControlRuleError("control row_ids and labels must be aligned")
     canonical_ids = tuple(
         (_require_int(value, f"row_ids[{index}]") for (index, value) in enumerate(raw_ids))
     )
@@ -181,8 +181,6 @@ def _canonical_rows(row_ids: object, labels: object) -> tuple[tuple[int, ...], t
         if label not in (0, 1):
             raise ControlRuleError("control labels must be exact binary values")
         canonical_labels.append(label)
-    if set(canonical_labels) != {0, 1}:
-        raise ControlRuleError("control evidence must contain both binary classes")
     return (canonical_ids, tuple(canonical_labels))
 
 
@@ -255,19 +253,22 @@ def _validated_candidate_table(
                 )
             recomputed_losses.append(expected_loss)
             probability_hex.append(probability.hex())
-        mean_loss = math.fsum(recomputed_losses) / len(recomputed_losses)
-        supplied_mean = _require_float(
-            raw_row.get("mean_log_loss"), "candidate mean_log_loss", minimum=0.0
-        )
-        if not math.isclose(supplied_mean, mean_loss, rel_tol=1e-12, abs_tol=1e-12):
-            raise ControlRuleError("candidate mean loss is inconsistent with row losses")
+        mean_loss = math.fsum(recomputed_losses) / len(recomputed_losses) if labels else None
+        if labels:
+            supplied_mean = _require_float(
+                raw_row.get("mean_log_loss"), "candidate mean_log_loss", minimum=0.0
+            )
+            if not math.isclose(supplied_mean, mean_loss, rel_tol=1e-12, abs_tol=1e-12):
+                raise ControlRuleError("candidate mean loss is inconsistent with row losses")
+        elif raw_row.get("mean_log_loss") is not None:
+            raise ControlRuleError("empty control evidence must have no mean loss")
         losses = tuple(recomputed_losses)
         losses_by_candidate.append(losses)
         summaries.append(
             {
                 "order": order,
                 "alpha_hex": alpha.hex(),
-                "mean_log_loss_hex": mean_loss.hex(),
+                "mean_log_loss_hex": None if mean_loss is None else mean_loss.hex(),
                 "probabilities_sha256": canonical_sha256(probability_hex),
                 "losses_sha256": canonical_sha256([value.hex() for value in losses]),
             }
@@ -298,7 +299,7 @@ def _decision_payload(
     summaries, losses_by_candidate = _validated_candidate_table(
         candidate_table, canonical_labels, alphas
     )
-    means = [math.fsum(losses) / len(losses) for losses in losses_by_candidate]
+    means = [math.fsum(losses) / len(losses) if losses else None for losses in losses_by_candidate]
     rule: dict[str, object] = {
         "name": rule_name,
         "candidate_alphas_hex": [alpha.hex() for alpha in alphas],
@@ -311,8 +312,12 @@ def _decision_payload(
     if rule_name == "public_argmin_mean_logloss":
         if safety_margin_z is not None or minimum_control_improvement is not None:
             raise ControlRuleError("public argmin cannot receive FedSift margin parameters")
-        selected_index = min(range(len(alphas)), key=lambda index: (means[index], -alphas[index]))
-        status = "selected_public_mean_logloss_argmin"
+        if canonical_ids:
+            selected_index = min(range(len(alphas)), key=lambda index: (means[index], -alphas[index]))
+            status = "selected_public_mean_logloss_argmin"
+        else:
+            selected_index = alphas.index(1.0)
+            status = "fallback_full_step_empty_control"
         for index, alpha in enumerate(alphas):
             decision_rows.append({**summaries[index], "selected": index == selected_index})
     else:
@@ -342,7 +347,7 @@ def _decision_payload(
                     for (full_loss, candidate_loss) in zip(full_losses, losses_by_candidate[index])
                 )
             )
-            mean_improvement = math.fsum(differences) / len(differences)
+            mean_improvement = math.fsum(differences) / len(differences) if differences else None
             if len(differences) > 1:
                 centered = math.fsum(((value - mean_improvement) ** 2 for value in differences))
                 standard_error = math.sqrt(centered / (len(differences) - 1)) / math.sqrt(
@@ -363,7 +368,9 @@ def _decision_payload(
             decision_rows.append(
                 {
                     **summaries[index],
-                    "paired_improvement_vs_full_hex": mean_improvement.hex(),
+                    "paired_improvement_vs_full_hex": (
+                        None if mean_improvement is None else mean_improvement.hex()
+                    ),
                     "paired_standard_error_hex": standard_error_hex,
                     "heuristic_lower_margin_hex": lower_margin_hex,
                     "passes_supported_override": passes,
@@ -517,8 +524,8 @@ def validate_information_matched_pair(
     rule is executed recursively, its selected alpha may change the next model
     state and every later candidate table.  Consequently this function cannot
     attest fairness, equality, or reproducibility of two independently run
-    recursive trajectories; that requires the result-blind trajectory plan and
-    validator in :mod:`fedsift.control_trajectory`.
+    recursive trajectories. Those comparisons require separate complete
+    training runs under the same data and experimental settings.
     """
     fedsift_receipt = validate_control_decision_receipt(
         fedsift_receipt,

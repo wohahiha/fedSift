@@ -84,7 +84,9 @@ The [main experiment plan](config/experiment_plan.json) contains **70 training u
 | FedSift without Sift | `fedsift_without_sift` | Disables public-control queries and uses the full server step |
 | FedSift with public argmin | `fedsift_public_argmin_rule` | Chooses the step with the lowest public-control log loss |
 
-Hyperparameter selection, public control, threshold selection, and outer evaluation have separate data-access roles. Selection decisions and preprocessing records are bound to each training unit; outer-test access is recorded explicitly. The archived hyperparameter search contains **64,800 completed units** across both datasets.
+Hyperparameter selection, public control, threshold selection, and outer evaluation have separate data-access roles. Selection decisions and preprocessing records are bound to each training unit; outer-test access is recorded explicitly. The [study design](config/study.json) specifies **8,640 inner-training units**: 2 datasets × 4 main methods × 5 outer folds × 24 candidates × 3 inner folds × 3 random streams. Ablations inherit the selected FedSift configuration. The complete inner predictions supporting the 40 selection decisions are included in [the selection evidence archive](output/reference/selection_evidence.zip).
+
+Within each outer split, initialization is paired and fixed across methods and random streams. Seeds `101`, `211`, and `307` control the private sampling and noise streams during selection; non-private full-batch FedAvg is deterministic. Final refits use evaluation seed `939188524` with the same initialization convention. Candidate coordinates are paired within FedAvg/DP-FedAvg and within DP-FedAdam/FedSift; the latter pair shares both local and server optimizer settings.
 
 The [evaluation plan](config/evaluation_plan.json) specifies privacy accounting, resource and communication measurements, membership inference, attribute reconstruction, and poisoning experiments. Attack evaluations use the six designated models from outer fold 0; their scope is narrower than the 70-unit main comparison. FedSift's control margin is a heuristic decision rule, as documented in [the implementation](src/fedsift/control_rule.py).
 
@@ -95,31 +97,30 @@ Start with `verify`, then choose the level of reproduction needed. On Windows, u
 | Command | Action | Training scope |
 | --- | --- | --- |
 | `bash run.sh verify` | Check package integrity, environment, and saved-model predictions | No retraining |
-| `bash run.sh rebuild` | Rebuild and compare the 11 main and follow-up result tables | Uses saved models and records |
+| `bash run.sh rebuild` | Rebuild and compare main and follow-up result tables | Uses saved models and records |
 | `bash run.sh train-smoke` | Retrain and compare one complete FedSift outer-fold unit per dataset | 2 units; outer-test access remains closed |
 | `bash run.sh replay` | Retrain the main and poisoning experiments using the saved selections, then compare result tables | 70 main units and 12 poisoning units |
 | `bash run.sh benchmark` | Repeat the resource measurement protocol with warm-up and balanced execution order | Dedicated resource runs |
-| `bash run.sh audit-search` | Verify every member of the archived search against its manifest | No retraining |
-| `bash run.sh search` | Rerun the complete hyperparameter search | 64,800 units |
-| `bash run.sh tests` | Run algorithm and protocol regression tests in isolated processes | 32 test modules |
+| `bash run.sh analyze` | Reproduce paired record-group bootstrap intervals and editable bootstrap and poisoning plots | Saved outer predictions; 10,000 paired draws |
+| `bash run.sh audit-search` | Verify archived inner predictions and recompute all 40 selection decisions | No retraining |
+| `bash run.sh search` | Rerun the manuscript's hyperparameter search | 8,640 units |
+| `bash run.sh tests` | Run algorithm and protocol regression tests in isolated processes | Reports passed, failed, and skipped cases separately |
 
 `replay` uses the selections included in this package. `search` writes a separate search run and does not replace those selections. A complete search is substantially more expensive than checking saved results.
 
 New experiments are written to timestamped directories under `output/runs/`; verification reports are written to `output/validation/`. The launchers preserve `output/reference/`. Access logs and failure records belong to their respective runs and must be retained to preserve the recorded evaluation history.
 
-### Recorded validation
+### Validation
 
-The included [acceptance record](provenance/acceptance.json) documents the following checks on this distribution's executable sources:
+The [acceptance record](provenance/acceptance.json) binds the delivered sources to their verification results. Tests cover per-record gradients against a direct autograd reference, local clipping and noise, fixed reference counts under record removal, control-set fallback, metric consistency, model export, selection boundaries, and replay in the packaged runtime. The test runner records actual passed, failed, and skipped counts.
 
-| Check | Recorded outcome |
-| --- | --- |
-| Regression suite | 294 tests passed across 32 modules |
-| Saved-model predictions | 70 models checked; maximum absolute difference `2.22e-16` |
-| Training comparison | Both complete FedSift test units matched the reference model, preprocessing, validation predictions, threshold, and recorded training chain exactly |
-| Table reconstruction | All 11 tables matched within tolerance; 9 were byte-identical |
-| Search archive | All 64,800 original unit records verified |
+`verify` independently reconstructs saved-model predictions. `audit-search` recomputes candidate metrics from concatenated inner-fold predictions before applying the declared lexicographic selection rule. `analyze` reproduces the paired group bootstrap using common resampling weights for every method comparison. Resource timings and memory measurements reflect the machine load during the measurement.
 
-This validation retrained two main units; it did not rerun all 70 main units or the full search. Resource timings and memory measurements depend on machine load even when the environment checks pass.
+### Private model training
+
+The command-line experiments use public datasets and reproducible random streams. For private records, [`train_private_model`](src/fedsift/private_training.py) uses fresh operating-system randomness for Poisson sampling and Gaussian noise, then returns only the final model, its architecture, and the single-run privacy accounting result. Internal record memberships, gradient commitments, seeds, and audit receipts are excluded from that output.
+
+Fix the public auxiliary configuration before calling this API: preprocessing, client reference slots and counts, optimizer settings, and the training budget. [`seal_training_role_tables`](src/fedsift/train_unit.py) accepts the records present in those fixed private slots; removing a record leaves the normalization and aggregation weights unchanged. Public control and threshold-selection records remain fixed. The reported budget covers one model-training run; a workflow that selects settings or releases multiple models using private records needs the corresponding accounting.
 
 ## Results
 
@@ -129,6 +130,7 @@ Reference results can be inspected directly without running training:
 | --- | --- |
 | [Method summary](output/reference/main_summary/method_summary.csv) | Metrics by dataset and method, with fold means, standard deviations, and confidence intervals |
 | [Paired comparisons](output/reference/main_summary/paired_fedsift_differences.csv) | Paired differences between FedSift and the comparison methods |
+| [Paired bootstrap](output/reference/main_summary/paired_group_bootstrap.csv) | Record-group bootstrap estimates and 95% intervals for log loss and Brier differences |
 | [Out-of-fold predictions](output/reference/main_summary/oof_predictions.csv) | Saved predictions for the outer evaluation |
 | [Privacy accounting](output/reference/followup/privacy_resource/privacy_accounting.csv) | Accounting results for the designated private training units |
 | [Resource and communication summary](output/reference/followup/privacy_resource/resource_and_communication.csv) | Recorded computation and communication quantities |
@@ -146,7 +148,7 @@ Unit-level models and their evaluation records are retained in [`output/referenc
 ├── tests/            # Algorithm and experiment-protocol regression tests
 ├── tools/            # Unified runner, result comparisons, and isolated test execution
 ├── config/           # Fixed experiment plans and execution authorization
-├── data/             # Registered input datasets and source download
+├── data/             # Registered input datasets
 ├── environment/      # Offline runtime parts, dependency lock, and runtime contract
 ├── output/reference/ # Saved selections, trained models, results, and evidence archives
 ├── provenance/       # Study identities, source hashes, path mappings, and acceptance record
@@ -158,7 +160,7 @@ Unit-level models and their evaluation records are retained in [`output/referenc
 
 The packaged runtime uses **CPython 3.10.19**, **PyTorch 2.5.1**, **NumPy 2.2.6**, **SciPy 1.15.2**, **scikit-learn 1.7.2**, **Opacus 1.5.4**, and **pandas 2.3.3**. Exact builds are listed in [`environment/conda-lock.txt`](environment/conda-lock.txt) and [`environment/packages.json`](environment/packages.json).
 
-The [source manifest](provenance/release_sources.json) identifies the executable files in this distribution. [Study identities](provenance/study_identity.json) identify the recorded experiment, while the [path map](provenance/path_map.json) resolves paths embedded in its records to locations in this package. Original record identifiers and random-seed namespaces are preserved for reproducibility.
+The [source manifest](provenance/release_sources.json) identifies the executable files in this distribution. [Study identities](provenance/study_identity.json) identify the recorded experiment, while the [path map](provenance/path_map.json) resolves paths embedded in its records to locations in this package. Immutable record identifiers and random-seed namespaces are retained in `provenance/` so the saved experiment can be reconstructed exactly. The command-line execution scope is defined by `config/study.json`; broader registered inventories are used only to reconstruct those original identities.
 
 ## Git and large files
 

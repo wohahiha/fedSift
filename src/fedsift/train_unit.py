@@ -348,9 +348,7 @@ class TrainingBudget:
             raise TrainingUnitError("participation roster length differs from server rounds")
         if any((values != participants[0] for values in participants[1:])):
             raise TrainingUnitError(
-                _identity(
-                    "n1_unit_runner_requires_one_fixed_client_participation_roster_across_rounds"
-                )
+                "unit runner requires one fixed client-participation roster across rounds"
             )
         object.__setattr__(self, "participating_clients_by_round", tuple(participants))
         plans = tuple((tuple(value) for value in self.nonprivate_batch_plans_by_round))
@@ -383,7 +381,7 @@ class TrainingBudget:
             raise TrainingUnitError("target delta must be smaller than one")
         object.__setattr__(self, "target_delta", delta)
         if self.model_family not in MODEL_FAMILIES:
-            raise TrainingUnitError(_identity("model_family_is_outside_the_frozen_n1_roster"))
+            raise TrainingUnitError("model family is outside the frozen roster")
         object.__setattr__(
             self, "initialization_seed", _seed(self.initialization_seed, "initialization_seed")
         )
@@ -687,10 +685,12 @@ def _validated_role_table(
     ids = tuple(row_ids)
     raw_features = tuple((tuple(row) for row in features))
     raw_labels = tuple(labels)
-    if not ids or len(raw_features) != len(ids) or len(raw_labels) != len(ids):
+    if (not ids and role not in _CLIENT_NAMES) or len(raw_features) != len(ids) or len(raw_labels) != len(ids):
         raise TrainingUnitError(f"{role} role arrays are empty or misaligned")
-    width = len(raw_features[0])
-    if width <= 0 or any((len(row) != width for row in raw_features)):
+    if any(type(value) is not int or value < 0 for value in ids) or len(set(ids)) != len(ids):
+        raise TrainingUnitError(f"{role} row IDs must be unique nonnegative integers")
+    width = len(raw_features[0]) if raw_features else 0
+    if (raw_features and width <= 0) or any((len(row) != width for row in raw_features)):
         raise TrainingUnitError(f"{role} feature matrix width differs")
     matrix: list[tuple[float, ...]] = []
     for row in raw_features:
@@ -805,6 +805,43 @@ def seal_preprocessed_unit_data(
     )
 
 
+def seal_training_role_tables(
+    capability: Mapping[str, object],
+    role_tables: Mapping[str, tuple[Sequence[int], Sequence[Sequence[object]], Sequence[object]]],
+    *,
+    preprocessing_artifact_sha256: str,
+    expected_capability_sha256: str,
+) -> SealedUnitData:
+    """Seal records already transformed using fixed public preprocessing.
+
+    Capability client memberships define public reference slots, counts, and
+    weights. Actual private tables may omit slots, including an empty client.
+    Public roles must retain their exact membership. This entry point does not
+    fit preprocessing or repartition records when a private record is absent.
+    """
+    scope = _resolve_capability_scope(capability, expected_capability_sha256=expected_capability_sha256)
+    if set(role_tables) != {role for role, _ in scope.role_row_ids}:
+        raise TrainingUnitError("role tables differ from the frozen role roster")
+    stored = _require_sha256(preprocessing_artifact_sha256, "fixed public preprocessing hash")
+    tables = tuple(_validated_role_table(role, *role_tables[role]) for role, _ in scope.role_row_ids)
+    widths = {len(table.features[0]) for table in tables if table.features}
+    if len(widths) != 1:
+        raise TrainingUnitError("preprocessed role feature widths differ")
+    value = SealedUnitData(
+        capability_sha256=scope.capability_sha256, preprocessing_artifact_sha256=stored,
+        roles=tables,
+        data_sha256=_sha256({
+            "schema": _identity("sealed_training_unit_data"),
+            "capability_sha256": scope.capability_sha256,
+            "preprocessing_artifact_sha256": stored,
+            "role_table_sha256": [table.table_sha256 for table in tables],
+        }),
+        _factory_seal=_DATA_FACTORY_SEAL,
+    )
+    _validate_sealed_data(scope, value)
+    return value
+
+
 def _validate_sealed_data(scope: _CapabilityScope, value: SealedUnitData) -> None:
     if type(value) is not SealedUnitData or value._factory_seal is not _DATA_FACTORY_SEAL:
         raise TrainingUnitError("training data are not factory sealed")
@@ -817,9 +854,14 @@ def _validate_sealed_data(scope: _CapabilityScope, value: SealedUnitData) -> Non
         raise TrainingUnitError("sealed data role order differs from capability")
     rebuilt: list[FrozenRoleTable] = []
     for table, (role, row_ids) in zip(value.roles, expected_roles):
-        if table._factory_seal is not _DATA_FACTORY_SEAL or table.row_ids != row_ids:
+        membership_valid = (
+            set(table.row_ids).issubset(row_ids)
+            if role in _CLIENT_NAMES and scope.method_id != "fedavg_nonprivate"
+            else table.row_ids == row_ids
+        )
+        if table._factory_seal is not _DATA_FACTORY_SEAL or not membership_valid:
             raise TrainingUnitError("sealed role membership differs from capability")
-        rebuilt_table = _validated_role_table(role, row_ids, table.features, table.labels)
+        rebuilt_table = _validated_role_table(role, table.row_ids, table.features, table.labels)
         if rebuilt_table != table:
             raise TrainingUnitError("sealed role table was modified after sealing")
         rebuilt.append(rebuilt_table)
@@ -882,7 +924,7 @@ def _validate_budget(
         raise TrainingUnitError("budget references a client outside the capability")
     for round_plans in budget.nonprivate_batch_plans_by_round:
         for plan in round_plans:
-            allowed = set(data.role(plan.client_id).row_ids)
+            allowed = set(dict(scope.role_row_ids)[plan.client_id])
             for epoch in plan.epochs:
                 for batch in epoch:
                     if not set(batch).issubset(allowed):
@@ -1208,6 +1250,8 @@ def _client_gradient_bridges(
         if table.role != client_id or client_id not in _CLIENT_NAMES:
             raise TrainingUnitError("gradient-bridge role is not a canonical client")
         features, labels, row_ids = _torch_role(table)
+        if not table.row_ids:
+            features = torch.empty((0, model.input_dim), dtype=torch.float64)
         bridges[client_id] = SelectedBCEGradientBridge(model, features, labels, row_ids)
     return bridges
 
@@ -1250,6 +1294,7 @@ def _execute_private_client(
     round_index: int,
     server_control: Mapping[str, torch.Tensor] | None,
     client_control: Mapping[str, torch.Tensor] | None,
+    randomness_mode: str = "reproducible",
 ) -> tuple[OrderedDict[str, torch.Tensor], RecordDPReport, tuple[PoissonStepReceipt, ...]]:
     if bridge.model is not model:
         raise TrainingUnitError("client gradient bridge is bound to a different model")
@@ -1286,7 +1331,9 @@ def _execute_private_client(
     gate = PoissonLocalTrainingGate(
         tuple(schedule),
         gradient_bridge=bridge,
-        population_row_ids=bridge.canonical_population_row_ids,
+        population_row_ids=tuple(sorted(dict(scope.role_row_ids)[table.role])),
+        reference_sample_count=len(dict(scope.role_row_ids)[table.role]),
+        randomness_mode=randomness_mode,
         clip_norm=budget.clip_norm,
         learning_rate=local_lr,
         delta=budget.target_delta,
@@ -1503,6 +1550,7 @@ def _execute_training_unit_core(
     expected_capability_sha256: str,
     expected_budget_sha256: str,
     resource_only: bool,
+    randomness_mode: str = "reproducible",
 ) -> TrainingUnitResult | ResourceOnlyTrainingResult:
     """Execute one committed capability, with a single prediction-free exit."""
     stage = "preflight"
@@ -1529,7 +1577,7 @@ def _execute_training_unit_core(
             expected_dispatch_sha256=spec.dispatch_sha256,
         )
         kernel = resolve_server_kernel(spec)
-        widths = {len(table.features[0]) for table in sealed_data.roles}
+        widths = {len(table.features[0]) for table in sealed_data.roles if table.features}
         if len(widths) != 1:
             raise TrainingUnitError("training roles have different feature widths")
         input_dim = next(iter(widths))
@@ -1632,7 +1680,7 @@ def _execute_training_unit_core(
             old_scaffold_controls: list[OrderedDict[str, torch.Tensor]] = []
             for client_position, client_id in enumerate(participants):
                 table = sealed_data.role(client_id)
-                counts.append(len(table.row_ids))
+                counts.append(len(dict(scope.role_row_ids)[client_id]))
                 if spec.privacy_mode == "nonprivate_explicit_minibatch":
                     plan = budget.nonprivate_batch_plans_by_round[round_index - 1][client_position]
                     local, steps, evaluations = _execute_nonprivate_client(
@@ -1655,6 +1703,7 @@ def _execute_training_unit_core(
                         round_index=round_index,
                         server_control=scaffold_server_control,
                         client_control=scaffold_client_controls.get(client_id),
+                        randomness_mode=randomness_mode,
                     )
                     runtime_reports[client_id].append(report)
                     expected_contexts[client_id][round_index] = _context(
@@ -1870,7 +1919,7 @@ def _execute_training_unit_core(
                 client_reports[client_id] = composed
                 sequential_reports.append(composed)
             memberships = OrderedDict(
-                ((client, sealed_data.role(client).row_ids) for client in client_reports)
+                ((client, dict(scope.role_row_ids)[client]) for client in client_reports)
             )
             conditions = _parallel_conditions(budget.partition_mode)
             if budget.partition_mode == "fixed_label_driven_auxiliary_condition":
@@ -2048,6 +2097,7 @@ def execute_training_unit(
     *,
     expected_capability_sha256: str,
     expected_budget_sha256: str,
+    randomness_mode: str = "reproducible",
 ) -> TrainingUnitResult:
     """Execute one sealed unit and return its raw native validation outputs."""
     result = _execute_training_unit_core(
@@ -2057,6 +2107,7 @@ def execute_training_unit(
         expected_capability_sha256=expected_capability_sha256,
         expected_budget_sha256=expected_budget_sha256,
         resource_only=False,
+        randomness_mode=randomness_mode,
     )
     if type(result) is not TrainingUnitResult:
         raise TrainingUnitError("full training path returned a resource-only result")
@@ -2175,7 +2226,7 @@ def validate_training_unit_result(
             ((report.client_id, report) for report in result.sequential_client_reports)
         )
         memberships = OrderedDict(
-            ((client, sealed_data.role(client).row_ids) for client in participant_order)
+            ((client, dict(scope.role_row_ids)[client]) for client in participant_order)
         )
         conditions = _parallel_conditions(budget.partition_mode)
         if budget.partition_mode == "fixed_label_driven_auxiliary_condition":
@@ -2375,6 +2426,7 @@ __all__ = [
     "execute_training_unit_resource_only",
     "materialize_training_role",
     "seal_preprocessed_unit_data",
+    "seal_training_role_tables",
     "validate_resource_only_training_result",
     "validate_training_unit_result",
 ]

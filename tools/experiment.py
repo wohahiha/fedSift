@@ -261,10 +261,12 @@ def compare_tables(directory):
 
 def summarize(directory):
     execute(directory, "summarize_results.py", "finalize")
+    execute(directory, "analyze_results.py")
     execute(directory, "summarize_privacy_resources.py", "finalize")
     execute(directory, "evaluate_attacks.py", "run-membership")
     execute(directory, "evaluate_attacks.py", "run-reconstruction")
     execute(directory, "evaluate_poisoning.py", "finalize")
+    execute(directory, "plot_poisoning.py")
 
 
 def rebuild(args):
@@ -274,6 +276,7 @@ def rebuild(args):
     if args.command == "replay":
         for shard in ("0", "1"):
             execute(directory, "run_experiment.py", "worker", "--shard", shard)
+        execute(directory, "summarize_results.py", "finalize")
         for dataset in ("pima", "retinopathy"):
             execute(directory, "evaluate_poisoning.py", "worker", "--dataset", dataset)
     summarize(directory)
@@ -287,6 +290,16 @@ def rebuild(args):
             "retrained_poisoning_units": 12 if args.command == "replay" else 0,
         },
     )
+
+
+def analyze_results(_):
+    runtime_check()
+    source_check()
+    directory = ROOT / "output/runs" / (time.strftime("%Y%m%d_%H%M%S") + "_analysis")
+    directory.mkdir(parents=True, exist_ok=False)
+    execute(directory, "analyze_results.py", "--predictions", str(REFERENCE / "main_summary/oof_predictions.csv"))
+    execute(directory, "plot_poisoning.py", "--summary", str(REFERENCE / "followup/poisoning/poisoning_summary.csv"))
+    report("analysis", {"status": "PASS", "output_directory": str(directory)})
 
 
 def benchmark(_):
@@ -334,7 +347,7 @@ def search_all(_):
 def audit_search(_):
     runtime_check()
     verify_release_sources()
-    manifest = read(REFERENCE / "selection_history.manifest.json")
+    manifest = read(REFERENCE / "selection_evidence.manifest.json")
     path = ROOT / manifest["archive"]
     if sha(path) != manifest["sha256"]:
         raise RuntimeError("Selection evidence archive changed")
@@ -344,9 +357,9 @@ def audit_search(_):
         for row in manifest["files"]:
             if hashlib.sha256(archive.read(row["path"])).hexdigest() != row["sha256"]:
                 raise RuntimeError("Selection evidence member changed: " + row["path"])
-    report(
-        "selection_archive", {"status": "PASS", "original_units_verified": len(manifest["files"])}
-    )
+    from verify_selection import verify_selection
+    result = verify_selection(REFERENCE)
+    report("selection_archive", {**result, "evidence_files_verified": len(manifest["files"])})
 
 
 def tests(args):
@@ -368,6 +381,7 @@ def main():
     for name in ("rebuild", "replay"):
         commands.add_parser(name).set_defaults(func=rebuild)
     commands.add_parser("benchmark").set_defaults(func=benchmark)
+    commands.add_parser("analyze").set_defaults(func=analyze_results)
     commands.add_parser("search").set_defaults(func=search_all)
     commands.add_parser("audit-search").set_defaults(func=audit_search)
     regression = commands.add_parser("tests")

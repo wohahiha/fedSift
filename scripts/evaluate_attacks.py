@@ -32,7 +32,7 @@ PLAN_PATH = ROOT / "config" / "evaluation_plan.json"
 OUTER_ROOT = TOP / "main"
 OUTER_CLOSURE = TOP / "main_summary" / "experiment_closure.json"
 RESULT_ROOT = TOP / "followup"
-PLAN_HASH_FIELD = "rapid_followup_plan_sha256"
+PLAN_HASH_FIELD = _identity("followup_plan_hash_field")
 
 
 class AttackError(RuntimeError):
@@ -263,7 +263,7 @@ def run_membership(_: argparse.Namespace) -> None:
     root = RESULT_ROOT / "membership"
     rows: list[dict[str, Any]] = []
     for spec in specs:
-        uid = sha({"domain": "rapid_membership_v1", "spec": spec})
+        uid = sha({"domain": _identity("membership_attack_domain"), "spec": spec})
         path = root / "units" / f"{uid}.json"
         if path.is_file():
             result = read_json(path)
@@ -293,7 +293,7 @@ def run_membership(_: argparse.Namespace) -> None:
         "schema": _identity("membership_closure"),
         "status": "MEMBERSHIP_COMPLETE_12_OF_12",
         "closed_at_utc": datetime.now(timezone.utc).isoformat(),
-        "rapid_followup_plan_sha256": plan[PLAN_HASH_FIELD],
+        _identity("followup_plan_hash_field"): plan[PLAN_HASH_FIELD],
         "unit_count": len(rows),
         "summary_sha256": hashlib.sha256(
             (root / "membership_summary.csv").read_bytes()
@@ -390,7 +390,7 @@ def run_reconstruction(_: argparse.Namespace) -> None:
     root = RESULT_ROOT / "reconstruction"
     rows = []
     for spec in specs:
-        uid = sha({"domain": "rapid_reconstruction_v1", "spec": spec})
+        uid = sha({"domain": _identity("reconstruction_attack_domain"), "spec": spec})
         path = root / "units" / f"{uid}.json"
         if path.is_file():
             result = read_json(path)
@@ -419,7 +419,7 @@ def run_reconstruction(_: argparse.Namespace) -> None:
         "schema": _identity("reconstruction_closure"),
         "status": "RECONSTRUCTION_COMPLETE_6_OF_6",
         "closed_at_utc": datetime.now(timezone.utc).isoformat(),
-        "rapid_followup_plan_sha256": plan[PLAN_HASH_FIELD],
+        _identity("followup_plan_hash_field"): plan[PLAN_HASH_FIELD],
         "unit_count": len(rows),
         "summary_sha256": hashlib.sha256(
             (root / "reconstruction_summary.csv").read_bytes()

@@ -32,15 +32,11 @@ from fedsift.hpo_attempt_receipt import (
     validate_hpo_attempt_receipt,
 )
 from fedsift.hpo_capability import build_hpo_unit_index, build_prevalidated_hpo_unit_capability
-from fedsift.hpo_output import validate_hpo_output_catalog, validate_hpo_output_manifest
-from fedsift.hpo_plan import close_hpo_ledger
-from fedsift.hpo_select import (
-    build_hpo_selection_decision_from_stage_commitment,
-    build_hpo_selection_stage_commitment,
-)
+from fedsift.hpo_output import validate_hpo_output_manifest
 from fedsift.runtime_environment import RuntimeEnvironmentError, RuntimeEnvironmentGuard
 from fedsift.study_factory import build_study_construction, propose_study
 from fedsift.training_budget_factory import SharedTrainingBudgetPolicy
+from fedsift.study_design import load_study_design, paper_training_units, validate_candidate_pairing
 
 TOP = results_root()
 RUN_ROOT = TOP / "selection"
@@ -165,7 +161,7 @@ def _policy(dataset: str) -> SharedTrainingBudgetPolicy:
         model_family="logistic_screening",
         participating_client_ids=tuple((f"client_{index}" for index in range(5))),
         paired_initialization_seed=20260901,
-        nonprivate_order_seed=f"{_identity('artifact_identity_10d49495')}{dataset}/formal-hpo-v1/nonprivate-order",
+        nonprivate_order_seed=f"{_identity('experiment_seed_namespace')}{dataset}/formal-hpo-v1/nonprivate-order",
         partition_mode="fixed_label_driven_auxiliary_condition",
         fixed_auxiliary_partition_condition_sha256=CLIENT_POLICY_SHA256,
     )
@@ -193,6 +189,17 @@ def _authorization() -> dict[str, Any]:
 
 
 def prepare(_: argparse.Namespace) -> None:
+    design = load_study_design()
+    execution_scope = _artifact({
+        "study_design": design,
+        "planned_units_per_dataset": 4320,
+        "outer_test_accessed": False,
+        "registered_protocol_role": "immutable_input_and_random_stream_identity",
+    }, "execution_scope_sha256")
+    scope_path = RUN_ROOT / "execution_scope.json"
+    if scope_path.exists() and _read_json(scope_path) != execution_scope:
+        raise SearchError("existing search scope differs; start a separate run")
+    _atomic_json(scope_path, execution_scope)
     if (RUN_ROOT / "launch_authorization.json").exists():
         existing = _authorization()
         print(
@@ -200,6 +207,8 @@ def prepare(_: argparse.Namespace) -> None:
                 {
                     "status": "reused_exact_launch_authorization",
                     "launch_authorization_sha256": existing["launch_authorization_sha256"],
+                    "planned_units_per_dataset": 4320,
+                    "execution_scope_sha256": execution_scope["execution_scope_sha256"],
                 }
             )
         )
@@ -230,7 +239,8 @@ def prepare(_: argparse.Namespace) -> None:
         proposals[dataset] = {
             "proposed_bundle_sha256": proposal.proposed_bundle_sha256,
             "proposal_archive_sha256": proposal_artifact["proposal_archive_sha256"],
-            "planned_unit_count": proposal.bundle["hpo_plan_binding"]["expected_unit_count"],
+            "planned_unit_count": 4320,
+            "registered_inventory_unit_count": proposal.bundle["hpo_plan_binding"]["expected_unit_count"],
         }
     authorization = _artifact(
         {
@@ -256,6 +266,8 @@ def prepare(_: argparse.Namespace) -> None:
                 "status": "prepared",
                 "launch_authorization_sha256": authorization["launch_authorization_sha256"],
                 "proposals": proposals,
+                "planned_units_per_dataset": 4320,
+                "execution_scope_sha256": execution_scope["execution_scope_sha256"],
             }
         )
     )
@@ -269,12 +281,14 @@ def _construction(dataset: str, authorization: Mapping[str, Any]):
     binding = authorization["proposals"][dataset]
     if proposal_archive["proposal_archive_sha256"] != binding["proposal_archive_sha256"]:
         raise SearchError("proposal archive differs from launch authorization")
-    return build_study_construction(
+    construction = build_study_construction(
         ROOT,
         dataset,
         **_study_kwargs(dataset, protocol_sha256, implementation_sha256),
         expected_bundle_sha256=binding["proposed_bundle_sha256"],
     )
+    validate_candidate_pairing(construction.frozen_candidate_space)
+    return construction
 
 
 def _planned_unit(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -407,6 +421,10 @@ def _failure_artifact(
 
 def worker(arguments: argparse.Namespace) -> None:
     authorization = _authorization()
+    scope = _read_json(RUN_ROOT / "execution_scope.json")
+    _verify_artifact(scope, "execution_scope_sha256")
+    if scope["study_design"] != load_study_design():
+        raise SearchError("search design changed after preparation")
     if (
         arguments.shards != authorization["worker_shards"]
         or not 0 <= arguments.shard < arguments.shards
@@ -414,7 +432,7 @@ def worker(arguments: argparse.Namespace) -> None:
         raise SearchError("worker shard identity differs from authorization")
     construction = _construction(arguments.dataset, authorization)
     unit_index = build_hpo_unit_index(construction.complete_hpo_plan)
-    all_units = list(construction.complete_hpo_plan["units"])
+    all_units = paper_training_units(construction.complete_hpo_plan)
     assigned = [
         unit
         for (index, unit) in enumerate(all_units)
@@ -500,7 +518,7 @@ def worker(arguments: argparse.Namespace) -> None:
 
 def _complete_artifacts(dataset: str, construction, unit_index) -> Iterable[dict[str, Any]]:
     unit_dir = RUN_ROOT / dataset / "units"
-    for unit in construction.complete_hpo_plan["units"]:
+    for unit in paper_training_units(construction.complete_hpo_plan):
         path = unit_dir / f"{unit['unit_id']}.json"
         if not path.is_file():
             raise SearchError(f"formal HPO remains open; missing unit: {unit['unit_id']}")
@@ -510,146 +528,62 @@ def _complete_artifacts(dataset: str, construction, unit_index) -> Iterable[dict
 
 
 def finalize(arguments: argparse.Namespace) -> None:
+    """Validate all paper units, then select within each outer training scope."""
+    from collections import defaultdict
+    from fedsift.hpo_select import _candidate_evaluation, _sort_key
+
     authorization = _authorization()
-    failure_dir = RUN_ROOT / arguments.dataset / "failures"
-    failures = list(failure_dir.glob("*.json")) if failure_dir.exists() else []
-    if failures:
-        raise SearchError(f"formal HPO has {len(failures)} recorded failures; ledger remains open")
+    scope = _read_json(RUN_ROOT / "execution_scope.json")
+    _verify_artifact(scope, "execution_scope_sha256")
+    if scope["study_design"] != load_study_design():
+        raise SearchError("search design changed after preparation")
     construction = _construction(arguments.dataset, authorization)
     plan = construction.complete_hpo_plan
+    design = load_study_design()
+    units = paper_training_units(plan, design)
     unit_index = build_hpo_unit_index(plan)
-    receipts: list[dict[str, Any]] = []
-    ledger: list[dict[str, Any]] = []
-    artifact_paths: list[Path] = []
-    for unit, artifact in zip(
-        plan["units"], _complete_artifacts(arguments.dataset, construction, unit_index), strict=True
-    ):
-        receipt = artifact["attempt_receipt"]
-        receipts.append(receipt)
-        ledger.append(
-            {
-                "unit_id": unit["unit_id"],
-                "attempts": [
-                    {
-                        "attempt_index": 0,
-                        "outcome": "complete",
-                        "attempt_receipt_sha256": receipt["attempt_receipt_sha256"],
-                    }
-                ],
-            }
-        )
-        artifact_paths.append(RUN_ROOT / arguments.dataset / "units" / f"{unit['unit_id']}.json")
-    closure = close_hpo_ledger(
-        plan,
-        ledger,
-        attempt_receipts=receipts,
-        candidate_space=construction.frozen_candidate_space,
-        nested_plan=construction.frozen_nested_plan,
-        group_manifest=construction.group_manifest,
-    )
-
-    def manifests():
-        for path in artifact_paths:
-            yield _read_json(path)["hpo_output_manifest"]
-
-    catalog = validate_hpo_output_catalog(
-        plan,
-        ledger,
-        receipts,
-        manifests(),
-        candidate_space=construction.frozen_candidate_space,
-        nested_plan=construction.frozen_nested_plan,
-        group_manifest=construction.group_manifest,
-        authoritative_rows=construction.dataset_rows,
-        authoritative_dataset_sha256=construction.dataset_rows.source_sha256,
-    )
-    stage = build_hpo_selection_stage_commitment(
-        plan,
-        closure,
-        ledger,
-        receipts,
-        catalog,
-        candidate_space=construction.frozen_candidate_space,
-        nested_plan=construction.frozen_nested_plan,
-        group_manifest=construction.group_manifest,
-        expected_catalog_validation_sha256=catalog["catalog_validation_sha256"],
-    )
-    evidence_dir = RUN_ROOT / arguments.dataset / "closed_evidence"
-    _atomic_json(evidence_dir / "ledger.json", ledger)
-    _atomic_json(evidence_dir / "attempt_receipts.json", receipts)
-    _atomic_json(evidence_dir / "ledger_closure.json", closure)
-    _atomic_json(evidence_dir / "output_catalog_validation.json", catalog)
-    _atomic_json(evidence_dir / "selection_stage_commitment.json", stage)
-    decision_hashes = []
-    receipt_by_unit = {row["unit_id"]: row for row in receipts}
-    unit_by_id = {row["unit_id"]: row for row in plan["units"]}
-    for outer_repeat in range(3):
-        for outer_fold in range(5):
-            for method in MAIN_METHODS:
-                unit_ids = [
-                    unit_id
-                    for (unit_id, row) in unit_by_id.items()
-                    if row["outer_repeat"] == outer_repeat
-                    and row["outer_fold"] == outer_fold
-                    and (row["method"] == method)
-                ]
-                scope_receipts = [receipt_by_unit[unit_id] for unit_id in unit_ids]
-                scope_outputs = [
-                    _read_json(RUN_ROOT / arguments.dataset / "units" / f"{unit_id}.json")[
-                        "hpo_output_manifest"
-                    ]
-                    for unit_id in unit_ids
-                ]
-                decision = build_hpo_selection_decision_from_stage_commitment(
-                    plan,
-                    closure,
-                    stage,
-                    scope_receipts,
-                    scope_outputs,
-                    candidate_space=construction.frozen_candidate_space,
-                    nested_plan=construction.frozen_nested_plan,
-                    group_manifest=construction.group_manifest,
-                    authoritative_rows=construction.dataset_rows,
-                    authoritative_dataset_sha256=construction.dataset_rows.source_sha256,
-                    expected_stage_commitment_sha256=stage["stage_commitment_sha256"],
-                    method=method,
-                    outer_repeat=outer_repeat,
-                    outer_fold=outer_fold,
-                    unit_index=unit_index,
-                )
-                path = (
-                    evidence_dir
-                    / "selection_decisions"
-                    / f"r{outer_repeat}_f{outer_fold}_{method}.json"
-                )
-                _atomic_json(path, decision)
-                decision_hashes.append(
-                    {
-                        "outer_repeat": outer_repeat,
-                        "outer_fold": outer_fold,
-                        "method": method,
-                        "selection_decision_manifest_sha256": decision[
-                            "selection_decision_manifest_sha256"
-                        ],
-                    }
-                )
-    final = _artifact(
-        {
-            "schema": _identity("hpo_dataset_closure"),
-            "status": "FORMAL_HPO_CLOSED_SCOPE_LOCAL_SELECTION_COMPLETE_OUTER_STILL_CLOSED",
-            "dataset_id": arguments.dataset,
-            "planned_unit_count": len(plan["units"]),
-            "ledger_closure_sha256": closure["closure_sha256"],
-            "output_catalog_validation_sha256": catalog["catalog_validation_sha256"],
-            "selection_stage_commitment_sha256": stage["stage_commitment_sha256"],
-            "selection_decision_catalog_sha256": canonical_sha256(decision_hashes),
-            "selection_decision_count": len(decision_hashes),
+    failures = list((RUN_ROOT / arguments.dataset / "failures").glob("*.json"))
+    if failures:
+        raise SearchError("failed paper units must be resolved before selection")
+    outputs = {}
+    for artifact in _complete_artifacts(arguments.dataset, construction, unit_index):
+        outputs[artifact["unit_id"]] = artifact["hpo_output_manifest"]
+    scopes = defaultdict(lambda: defaultdict(list))
+    for unit in units:
+        scopes[(unit["method"], unit["outer_repeat"], unit["outer_fold"])][unit["candidate_id"]].append(unit)
+    decisions = []
+    for (method, repeat, fold), candidates in sorted(scopes.items()):
+        evaluations = [_candidate_evaluation(
+            plan, construction.frozen_candidate_space, outputs,
+            method=method, outer_repeat=repeat, outer_fold=fold,
+            candidate_id=candidate, hpo_seeds=tuple(design["training_seeds"]),
+            inner_folds=tuple(design["inner_folds"]), candidate_units=candidate_units,
+        ) for candidate, candidate_units in sorted(candidates.items())]
+        ordered = sorted(evaluations, key=_sort_key)
+        for rank, evaluation in enumerate(ordered, 1):
+            evaluation["comparison_rank"] = rank
+        decision = _artifact({
+            "dataset": arguments.dataset, "method": method,
+            "outer_repeat": repeat, "outer_fold": fold,
+            "selected_candidate_id": ordered[0]["candidate_id"],
+            "selected_candidate_sha256": ordered[0]["candidate_sha256"],
+            "candidate_evaluations": ordered,
             "outer_test_accessed": False,
-        },
-        "formal_hpo_dataset_closure_sha256",
-    )
-    _atomic_json(evidence_dir / "selection_closure.json", final)
-    print(json.dumps(final))
+            "completed_training_units": sum(map(len, candidates.values())),
+        }, "selection_sha256")
+        name = f"{method}_repeat_{repeat}_fold_{fold}.json"
+        _atomic_json(RUN_ROOT / arguments.dataset / "paper_decisions" / name, decision)
+        decisions.append({k: decision[k] for k in (
+            "method", "outer_repeat", "outer_fold", "selected_candidate_id", "selection_sha256"
+        )})
+    closure = _artifact({
+        "status": "PAPER_SELECTION_COMPLETE", "dataset": arguments.dataset,
+        "study_design_sha256": canonical_sha256(design),
+        "completed_unit_count": len(units), "selection_decision_count": len(decisions),
+        "decisions": decisions, "outer_test_accessed": False,
+    }, "closure_sha256")
+    _atomic_json(RUN_ROOT / arguments.dataset / "paper_selection_closure.json", closure)
+    print(json.dumps(closure))
 
 
 def status(arguments: argparse.Namespace) -> None:
@@ -667,7 +601,7 @@ def status(arguments: argparse.Namespace) -> None:
                 "failed_unit_artifact_count": (
                     len(list(failure_dir.glob("*.json"))) if failure_dir.exists() else 0
                 ),
-                "planned_unit_count": 32400,
+                "planned_unit_count": 4320,
                 "outer_test_accessed": False,
             }
         )

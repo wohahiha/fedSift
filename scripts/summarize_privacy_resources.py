@@ -1,4 +1,4 @@
-"""Validate and close the frozen rapid privacy and resource matrices."""
+"""Validate and summarize the declared privacy and resource matrices."""
 
 from __future__ import annotations
 from fedsift.artifact_contract import identity as _identity
@@ -25,7 +25,7 @@ TOP = results_root()
 PLAN_PATH = ROOT / "config" / "evaluation_plan.json"
 RUN_ROOT = TOP / "main"
 RESULT_ROOT = TOP / "followup" / "privacy_resource"
-HASH_FIELD = "rapid_followup_plan_sha256"
+HASH_FIELD = _identity("followup_plan_hash_field")
 
 
 class ClosureError(RuntimeError):
@@ -218,7 +218,7 @@ def finalize(_: argparse.Namespace) -> None:
         "schema": _identity("privacy_resource_closure"),
         "status": "PRIVACY_60_OF_60_AND_RESOURCE_70_OF_70_COMPLETE",
         "closed_at_utc": datetime.now(timezone.utc).isoformat(),
-        "rapid_followup_plan_sha256": plan[HASH_FIELD],
+        _identity("followup_plan_hash_field"): plan[HASH_FIELD],
         "privacy_unit_count": len(privacy_rows),
         "resource_unit_count": len(resource_rows),
         "outer_quality_metrics_consumed": False,

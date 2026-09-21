@@ -124,7 +124,7 @@ _PLAN_TOP_LEVEL_FIELDS = {
 
 def _unit_id(identity: Mapping[str, object]) -> str:
     digest = hashlib.sha256(
-        (_identity("hpo_unit_v3") + canonical_sha256(identity)).encode("ascii")
+        (_identity("hpo_unit_domain") + canonical_sha256(identity)).encode("ascii")
     ).hexdigest()
     return f"hpo_{digest[:24]}"
 
@@ -394,7 +394,7 @@ def _assemble_hpo_plan(
                 {"criterion": "communication_bytes", "direction": "minimize"},
                 {"criterion": "candidate_id", "direction": "lexicographic_min"},
             ],
-            "development_context": "log_loss_first_for_all_methods_after_disclosed_v4_pilot_not_independent_confirmation",
+            "development_context": _identity("selection_development_context"),
         },
         "equal_budget_contract": {
             "candidate_count": candidate_count,
@@ -443,6 +443,36 @@ def build_hpo_plan(
     return plan
 
 
+_VALIDATED_PLAN_CONTENTS: set[str] = set()
+_VALIDATED_AUTHORIZATION_CONTENTS: set[str] = set()
+
+
+def _validation_content_key(*values: object) -> str | None:
+    # Cache full JSON contents, never a caller-supplied hash or object identity.
+    # Non-JSON container types take the full validation path so a tuple cannot
+    # borrow a successful list validation through JSON normalization.
+    def eligible(value):
+        if type(value) is dict:
+            return all(type(key) is str and eligible(child) for key, child in value.items())
+        if type(value) is list:
+            return all(eligible(child) for child in value)
+        return value is None or type(value) in (str, int, float, bool)
+
+    if not all(eligible(value) for value in values):
+        return None
+    try:
+        return canonical_sha256(list(values))
+    except CandidateSpaceError:
+        return None
+
+
+def _remember_validation(cache: set[str], key: str | None) -> None:
+    if key is not None:
+        if len(cache) >= 16:
+            cache.clear()
+        cache.add(key)
+
+
 def validate_hpo_plan(
     plan: Mapping[str, object],
     candidate_space: Mapping[str, object],
@@ -450,6 +480,9 @@ def validate_hpo_plan(
     group_manifest: Mapping[str, Any],
 ) -> None:
     """Rebuild and compare the complete Cartesian unit inventory."""
+    content_key = _validation_content_key(plan, candidate_space, nested_plan, group_manifest)
+    if content_key is not None and content_key in _VALIDATED_PLAN_CONTENTS:
+        return
     if not isinstance(plan, Mapping):
         raise HpoPlanError("HPO plan must be a mapping")
     try:
@@ -482,6 +515,7 @@ def validate_hpo_plan(
     )
     if dict(plan) != expected:
         raise HpoPlanError("HPO plan differs from the exact upstream-derived Cartesian inventory")
+    _remember_validation(_VALIDATED_PLAN_CONTENTS, content_key)
 
 
 def _validate_attempts(entry: Mapping[str, object]) -> bool:
@@ -680,6 +714,11 @@ def validate_selection_authorization(
     group_manifest: Mapping[str, Any],
 ) -> None:
     """Recompute authorization from the original terminal ledger."""
+    content_key = _validation_content_key(
+        plan, closure, ledger_entries, attempt_receipts, candidate_space, nested_plan, group_manifest
+    )
+    if content_key is not None and content_key in _VALIDATED_AUTHORIZATION_CONTENTS:
+        return
     if not isinstance(closure, Mapping):
         raise HpoPlanError("selection authorization must be a mapping")
     expected = close_hpo_ledger(
@@ -692,6 +731,7 @@ def validate_selection_authorization(
     )
     if dict(closure) != expected:
         raise HpoPlanError("selection authorization differs from the original terminal ledger")
+    _remember_validation(_VALIDATED_AUTHORIZATION_CONTENTS, content_key)
 
 
 def _outer_authorization(

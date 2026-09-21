@@ -100,7 +100,7 @@ def _reject_outer_authority(
         )
 
 
-def _scope_payload(scope: "RealDataResourceSmokeScope") -> dict[str, object]:
+def _scope_payload(scope: "ResourceStudyScope") -> dict[str, object]:
     return {
         "schema": SCOPE_SCHEMA,
         "outer_repeat": scope.outer_repeat,
@@ -320,7 +320,7 @@ def _bundle_mappings(
     Mapping[str, object],
 ]:
     if not isinstance(construction, StudyConstruction):
-        raise ResourceStudyError("input must be a factory-sealed RealN1StudyConstruction")
+        raise ResourceStudyError("input must be a factory-sealed StudyConstruction")
     bundle = construction.bundle
     if not isinstance(bundle, Mapping):
         raise ResourceStudyError("study construction bundle is missing")
@@ -566,7 +566,7 @@ def _input_binding(
         "hpo_scope_sha256": scope.scope_sha256,
         "candidate_id": NUMERIC_CANDIDATE_ID,
         "candidate_roster_id": FORMAL_CANDIDATE_ID,
-        "method_ids": sorted(MAIN_METHODS),
+        "method_ids": sorted(value.method_id for value in prepared_methods),
         "method_bindings_sha256": canonical_sha256(method_bindings),
         "shared_policy_sha256": policy.policy_sha256,
         "expected_rounds": policy.server_rounds,
@@ -619,12 +619,16 @@ def build_resource_study(
     expected_policy_sha256: str,
     warmup_passes: int = 1,
     latin_square_repetitions: int = 1,
+    method_ids: Sequence[str] = MAIN_METHODS,
     order_seed: str = _identity("registered_data_resource_cost_smoke"),
     outer_capability: object | None = None,
     outer_gate: object | None = None,
     outer_test_gate: object | None = None,
 ) -> ResourceStudyPreparation:
-    """Prepare all ten candidate-zero main methods outside the timed region."""
+    """Prepare the declared candidate-zero methods outside the timed region."""
+    methods = tuple(method_ids)
+    if not methods or len(set(methods)) != len(methods) or not set(methods).issubset(MAIN_METHODS):
+        raise ResourceStudyError("resource methods must be a unique registered subset")
     _reject_outer_authority(
         outer_capability=outer_capability, outer_gate=outer_gate, outer_test_gate=outer_test_gate
     )
@@ -677,10 +681,10 @@ def build_resource_study(
                 policy=shared_policy,
                 labels_by_row_id=labels,
             )
-            for method_id in MAIN_METHODS
+            for method_id in methods
         )
     )
-    if tuple((value.method_id for value in prepared)) != MAIN_METHODS:
+    if tuple((value.method_id for value in prepared)) != methods:
         raise ResourceStudyError("prepared method roster differs")
     model_hashes = {value.model_manifest_sha256 for value in prepared}
     if len(model_hashes) != 1:
@@ -690,7 +694,7 @@ def build_resource_study(
         construction, scope=scope, policy=shared_policy, prepared_methods=prepared
     )
     cost_capability = build_resource_protocol_capability(
-        method_ids=MAIN_METHODS,
+        method_ids=methods,
         synthetic_input=input_binding,
         expected_rounds=max_steps,
         model_manifest_sha256=model_hash,
@@ -824,7 +828,7 @@ def _validate_preparation_internal(
         != preparation._manifest.get("model_manifest_sha256")
     ):
         raise ResourceStudyError("cost capability differs from round, candidate, or model binding")
-    if tuple((value.method_id for value in preparation._prepared_methods)) != MAIN_METHODS:
+    if sorted(value.method_id for value in preparation._prepared_methods) != preparation._cost_capability["method_ids"]:
         raise ResourceStudyError("prepared method roster differs")
     for value in preparation._prepared_methods:
         _validate_prepared_method(
@@ -888,11 +892,11 @@ __all__ = [
     "NUMERIC_CANDIDATE_ID",
     "PREPARATION_SCHEMA",
     "REGISTERED_CLIENTS",
-    "RealDataResourceSmokeBoundaryError",
-    "RealDataResourceSmokeError",
-    "RealDataResourceSmokePreparation",
-    "RealDataResourceSmokeScope",
-    "build_real_data_resource_smoke",
+    "ResourceStudyBoundaryError",
+    "ResourceStudyError",
+    "ResourceStudyPreparation",
+    "ResourceStudyScope",
+    "build_resource_study",
     "run_real_data_cost_benchmark",
-    "validate_real_data_resource_smoke_preparation",
+    "validate_resource_study_preparation",
 ]

@@ -603,7 +603,7 @@ REFERENCE_BASIS: dict[str, dict[str, str]] = {
         "basis": "McMahan et al. 2017 Algorithm 1; explicit epoch minibatches",
         "source_locator": "https://proceedings.mlr.press/v54/mcmahan17a.html",
         "parameter_provenance": _identity(
-            "declared_n1_reference_point_not_claimed_as_paper_recommended_hyperparameters"
+            "declared_reference_point_not_claimed_as_paper_recommended_hyperparameters"
         ),
     },
     "dp_fedavg": {
@@ -611,7 +611,7 @@ REFERENCE_BASIS: dict[str, dict[str, str]] = {
         "basis": "paper-aligned FedAvg backend plus common record-level DP-SGD contract",
         "source_locator": "https://proceedings.mlr.press/v54/mcmahan17a.html",
         "parameter_provenance": _identity(
-            "declared_n1_reference_point_under_the_common_privacy_contract"
+            "declared_reference_point_under_the_common_privacy_contract"
         ),
     },
     "dp_fedprox_adapted": {
@@ -619,7 +619,7 @@ REFERENCE_BASIS: dict[str, dict[str, str]] = {
         "basis": "Li et al. 2020 FedProx objective; common record-level DP-SGD contract",
         "source_locator": "https://proceedings.mlsys.org/paper_files/paper/2020/hash/1f5fe83998a09396ebe6477d9475ba0c-Abstract.html",
         "parameter_provenance": _identity(
-            "declared_n1_reference_point_record_dp_adaptation_is_explicit"
+            "declared_reference_point_record_dp_adaptation_is_explicit"
         ),
     },
     "dp_scaffold_adapted": {
@@ -629,7 +629,7 @@ REFERENCE_BASIS: dict[str, dict[str, str]] = {
         ),
         "source_locator": "https://proceedings.mlr.press/v119/karimireddy20a.html",
         "parameter_provenance": _identity(
-            "declared_n1_reference_point_neither_the_record_dp_mechanism_nor_the_example_weighted_aggregation_is_"
+            "declared_reference_point_neither_the_record_dp_mechanism_nor_the_example_weighted_aggregation_is_"
         ),
     },
     "dp_fedadam": {
@@ -637,7 +637,7 @@ REFERENCE_BASIS: dict[str, dict[str, str]] = {
         "basis": "Reddi et al. 2021 FedAdam with v_minus_1 >= tau_squared; common record-level DP-SGD",
         "source_locator": "https://openreview.net/forum?id=LkFG3lB13U5",
         "parameter_provenance": _identity(
-            "declared_n1_reference_point_backend_identity_follows_fedopt"
+            "declared_reference_point_backend_identity_follows_fedopt"
         ),
     },
     "dp_fedyogi": {
@@ -645,7 +645,7 @@ REFERENCE_BASIS: dict[str, dict[str, str]] = {
         "basis": "Reddi et al. 2021 FedYogi with v_minus_1 >= tau_squared; common record-level DP-SGD",
         "source_locator": "https://openreview.net/forum?id=LkFG3lB13U5",
         "parameter_provenance": _identity(
-            "declared_n1_reference_point_backend_identity_follows_fedopt"
+            "declared_reference_point_backend_identity_follows_fedopt"
         ),
     },
     "dp_fedsofim_delta_proxy_adapted": {

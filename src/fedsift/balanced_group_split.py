@@ -61,7 +61,7 @@ class BalanceConstraints:
             or not isinstance(self.required_candidate_attempts, Integral)
             or self.required_candidate_attempts != 64
         ):
-            raise SplitPlanningError(_identity("requires_exactly_64_split_candidates"))
+            raise SplitPlanningError("FedSift requires exactly 64 split candidates")
 
 
 def _canonical_json(value: Any) -> str:

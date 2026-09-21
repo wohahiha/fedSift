@@ -548,6 +548,23 @@ class CandidateSpaceTests(unittest.TestCase):
 
 class HpoPlanTests(unittest.TestCase):
 
+    def test_validation_cache_checks_contents_and_container_types(self) -> None:
+        from unittest.mock import patch
+        from fedsift import hpo_plan as implementation
+
+        space, nested, manifest, plan = small_plan()
+        validate_hpo_plan(plan, space, nested, manifest)
+        with patch.object(implementation, "_assemble_hpo_plan", side_effect=AssertionError("rebuild")):
+            validate_hpo_plan(copy.deepcopy(plan), space, nested, manifest)
+        changed = copy.deepcopy(plan)
+        changed["units"][0]["inner_fold"] = 99
+        with self.assertRaises(HpoPlanError):
+            validate_hpo_plan(changed, space, nested, manifest)
+        changed = copy.deepcopy(plan)
+        changed["units"] = tuple(changed["units"])
+        with self.assertRaises(HpoPlanError):
+            validate_hpo_plan(changed, space, nested, manifest)
+
     def test_without_sift_has_one_frozen_no_query_full_step_semantics(self) -> None:
         switch = MATCHED_ABLATIONS["fedsift_without_sift"]["mechanism_switch"]
         self.assertEqual(switch["replacement_value"], "no_public_control_fixed_full_step")
@@ -605,7 +622,7 @@ class HpoPlanTests(unittest.TestCase):
         )
         self.assertEqual(
             plan["selection_contract"]["development_context"],
-            "log_loss_first_for_all_methods_after_disclosed_v4_pilot_not_independent_confirmation",
+            _identity("selection_development_context"),
         )
         validate_hpo_plan(plan, space, nested, manifest)
 
@@ -661,7 +678,7 @@ class HpoPlanTests(unittest.TestCase):
                 identity = dict(unit)
                 identity.pop("unit_id")
                 digest = hashlib.sha256(
-                    (_identity("hpo_unit_v3") + canonical_sha256(identity)).encode("ascii")
+                    (_identity("hpo_unit_domain") + canonical_sha256(identity)).encode("ascii")
                 ).hexdigest()
                 unit["unit_id"] = f"hpo_{digest[:24]}"
         method_drift.pop("hpo_plan_sha256")
@@ -690,7 +707,7 @@ class HpoPlanTests(unittest.TestCase):
         identity = dict(unit_drift["units"][0])
         identity.pop("unit_id")
         digest = hashlib.sha256(
-            (_identity("hpo_unit_v3") + canonical_sha256(identity)).encode("ascii")
+            (_identity("hpo_unit_domain") + canonical_sha256(identity)).encode("ascii")
         ).hexdigest()
         unit_drift["units"][0]["unit_id"] = f"hpo_{digest[:24]}"
         unit_drift.pop("hpo_plan_sha256")

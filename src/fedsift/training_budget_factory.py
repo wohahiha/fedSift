@@ -341,7 +341,7 @@ def _shuffle_digest(
     *, seed: str, client_id: str, server_round: int, local_epoch: int, row_id: int
 ) -> str:
     return hashlib.sha256(
-        f"{_identity('nonprivate_explicit_order_v1')}{seed}\x00{client_id}\x00{server_round}\x00{local_epoch}\x00{row_id}".encode(
+        f"{_identity('nonprivate_explicit_order_domain')}{seed}\x00{client_id}\x00{server_round}\x00{local_epoch}\x00{row_id}".encode(
             "utf-8"
         )
     ).hexdigest()
